@@ -120,3 +120,7 @@ claude plugin validate .
 ```bash
 claude plugin marketplace update zh-en-bridge && claude plugin update zh-en-bridge@zh-en-bridge
 ```
+
+## 许可证
+
+[MIT](LICENSE)

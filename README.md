@@ -120,3 +120,7 @@ To release, bump `version` in `.claude-plugin/plugin.json`, push, then run:
 ```bash
 claude plugin marketplace update zh-en-bridge && claude plugin update zh-en-bridge@zh-en-bridge
 ```
+
+## License
+
+[MIT](LICENSE)
