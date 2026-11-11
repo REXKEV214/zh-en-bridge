@@ -195,6 +195,30 @@ test('an edited translation goes out as edited and says so', { options: OPTIONS 
   await user.unmount()
 })
 
+test('a translation that keeps quoted Chinese still counts as the translation', { options: OPTIONS }, async ($, on) => {
+  const QUOTED = 'Rename the button "发送的英文" to "中文原文", and show the English by default.'
+  const { asks, submitted, clock } = engine(on, { draft: ZH, answer: ask => (isToEnglish(ask) ? ok(QUOTED) : undefined) })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await translateBox($, () => clock.settle())
+  const edited = QUOTED + ' Keep the change small.'
+  await $.prompt.submit(typed(edited))
+  expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
+
+  const user = await $.ui.mount(row('UserMessage', 'u-q', edited))
+  expect(await shown(user)).toBe(edited)
+  await press(user, '中文原文')
+  expect(await shown(user)).toBe(ZH)
+  await user.unmount()
+
+  // Its reply is translated up front, like any reply to a translated prompt.
+  await $.session.append(reply('row-q'))
+  await clock.settle()
+  expect(asks.length).toBe(2)
+  const answer = await $.ui.mount(row('AssistantMessage', 'row-q', REPLY))
+  expect(await shown(answer)).toBe(REPLY_ZH)
+  await answer.unmount()
+})
+
 test('Chinese sent after a translation goes out as typed, and its reply is left alone', { options: OPTIONS }, async ($, on) => {
   const { asks, submitted, clock } = engine(on, { draft: ZH })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })

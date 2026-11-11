@@ -354,8 +354,9 @@ export const register: Register = (on, options) => {
     if (e.isMeta || !TYPED.has(e.origin.kind)) return next(e)
 
     // A translation from the button, sent as it stands or as the person edited it.
+    // It may keep quoted Chinese, so it counts while unchanged or still mostly English.
     const draft = await read($, draftAtom)
-    if (draft && !hasChinese(e.text)) {
+    if (draft && (e.text.trim() === draft.en.trim() || isMostlyEnglish(e.text))) {
       await remember($, draft.zh, e.text, e.text.trim() !== draft.en.trim())
       await update($, draftAtom, () => null)
       await update($, englishTurnAtom, () => true)
