@@ -55,7 +55,7 @@ Then set an API key (below) and start a new session.
 - Turn on **中文译文** under a reply to read it in Chinese; turn it off for the English original.
 - Subagent output is not translated.
 
-**Keeping Claude in English.** The plugin adds a fixed instruction to the system prompt asking Claude to reply in the language of the user's latest message, and attaches a model-only "please reply in English" note to each translated prompt.
+**Keeping Claude in English.** Claude sees only the English prompt you sent; nothing is attached to it. The plugin adds a fixed instruction to the system prompt asking Claude to reply in the language of the user's latest message.
 
 ## Configuration
 

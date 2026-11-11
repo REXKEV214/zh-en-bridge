@@ -140,7 +140,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Enter on the English: it goes out, asking for an English reply.
     await $.prompt.submit(typed(EN))
     expect(submitted.map(s => s.text)).toEqual([EN])
-    expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
+    expect(submitted[0]?.context).toBeUndefined()
     expect(asks.length).toBe(1)
 
     // The row stores and shows the English; the button reveals what was typed.
@@ -202,7 +202,7 @@ test('a translation that keeps quoted Chinese still counts as the translation', 
   await translateBox($, () => clock.settle())
   const edited = QUOTED + ' Keep the change small.'
   await $.prompt.submit(typed(edited))
-  expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
+  expect(submitted[0]?.context).toBeUndefined()
 
   const user = await $.ui.mount(row('UserMessage', 'u-q', edited))
   expect(await shown(user)).toBe(edited)
@@ -227,7 +227,7 @@ test('after the button, whatever is sent keeps the Chinese; without it, nothing 
   const edited = '算了，直接用中文问：' + ZH
   await $.prompt.submit(typed(edited))
   expect(submitted[0]?.text).toBe(edited)
-  expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
+  expect(submitted[0]?.context).toBeUndefined()
   const sent = await $.ui.mount(row('UserMessage', 'u-c', edited))
   expect(await shown(sent)).toBe(edited)
   await press(sent, '中文原文')

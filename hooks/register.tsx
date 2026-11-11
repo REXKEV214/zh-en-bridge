@@ -44,9 +44,6 @@ const LANGUAGE_SECTION = {
   scope: 'session',
 } as const
 /** Rides beside a translated prompt, for the model alone. */
-const REPLY_IN_ENGLISH =
-  'The user wrote this message in Chinese; it was machine-translated into English. Reply in English: your reply is translated back into Chinese for them.'
-
 const translatingAtom = atom({ plugin: 'zh-en-bridge', key: 'translating' } as const, false, { shape: 'translating-1' })
 const englishTurnAtom = atom({ plugin: 'zh-en-bridge', key: 'englishTurn' } as const, false, { shape: 'englishTurn-1' })
 const draftAtom = atom({ plugin: 'zh-en-bridge', key: 'draft' } as const, null as Draft | null, { shape: 'draft-2' })
@@ -346,11 +343,8 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (e.command) return next(e)
-    // The band's own send: `sendDraft` has already recorded it.
-    if (e.origin.kind === 'plugin') {
-      if (e.origin.name !== 'zh-en-bridge') return next(e)
-      return next({ ...e, context: [...(e.context ?? []), REPLY_IN_ENGLISH] })
-    }
+    // Another plugin's send, or the band's own: `sendDraft` has already recorded it.
+    if (e.origin.kind === 'plugin') return next(e)
     if (e.isMeta || !TYPED.has(e.origin.kind)) return next(e)
 
     // After the button, the next send is the translation, however the person edited it:
@@ -360,7 +354,7 @@ export const register: Register = (on, options) => {
       await remember($, draft.zh, e.text, e.text.trim() !== draft.en.trim())
       await update($, draftAtom, () => null)
       await update($, englishTurnAtom, () => true)
-      return next({ ...e, context: [...(e.context ?? []), REPLY_IN_ENGLISH] })
+      return next(e)
     }
     // Without the button, the prompt goes out as typed and replies are translated only on request.
     await update($, englishTurnAtom, () => false)

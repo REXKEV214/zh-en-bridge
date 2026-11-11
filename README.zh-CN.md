@@ -55,7 +55,7 @@ claude plugin install zh-en-bridge --marketplace REXKEV214/zh-en-bridge --scope 
 - 点亮回复下面的 **中文译文** 显示中文，再点一下显示英文原文。
 - 子代理的输出不翻译。
 
-**让 Claude 用英文回复**：插件在 system prompt 里加了一段固定说明，要求「用户最新一条消息是什么语言，就用什么语言回复」；用译文发出的 prompt 还会附一条只有模型看得到的「请用英文回复」。
+**让 Claude 用英文回复**：Claude 只看到你发出的英文 prompt，插件不会往里附加任何内容。插件在 system prompt 里加了一段固定说明，要求「用户最新一条消息是什么语言，就用什么语言回复」。
 
 ## 配置
 
