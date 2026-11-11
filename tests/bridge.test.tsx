@@ -24,7 +24,7 @@ const isToEnglish = (ask: Ask) => ask.body.messages[0]?.content.startsWith('You 
  * The engine beneath the plugin. `hasBox` false stands for a surface whose
  * prompt box a plugin cannot write (the desktop app draws its own).
  */
-function engine(on: On, opts: { answer?: (ask: Ask, calls: number) => HttpResponse | undefined; hasBox?: boolean } = {}) {
+function engine(on: On, opts: { answer?: (ask: Ask, calls: number) => HttpResponse | undefined; hasBox?: boolean; draft?: string } = {}) {
   const asks: Ask[] = []
   const submitted: Submitted[] = []
   const fills: string[] = []
@@ -33,9 +33,12 @@ function engine(on: On, opts: { answer?: (ask: Ask, calls: number) => HttpRespon
   on('command.register', () => ({ value: { command: 'en' } }))
   on('command.run', () => ({ text: '' }))
   on('ui.status', () => ({ value: undefined }))
+  const box = { text: opts.draft ?? '' }
+  on('prompt.read', () => ({ value: { text: box.text, cursor: box.text.length } }))
   on('prompt.fill', (_, e) => {
     if (opts.hasBox === false) return { isFilled: false, refusal: 'no_composer' as const }
     fills.push(e.text)
+    box.text = e.text
     return { isFilled: true }
   })
   on('prompt.submit', (_, e) => {
@@ -421,4 +424,38 @@ test('a prompt option left empty falls back to the built-in default', {
   expect(asks[0]?.body.messages[0]?.content).toContain('你是一名翻译')
   expect(asks[0]?.body.messages[1]?.content).toContain(`<原文>\n${REPLY}\n</原文>`)
   await ui.unmount()
+})
+
+test('「译成英文」 replaces the Chinese in the box before anything is submitted', { options: OPTIONS }, async ($, on) => {
+  const { asks, submitted, fills, clock } = engine(on, { draft: ZH })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
+  expect(await button(band, '译成英文')).toBeFalsy()
+  await press(band, '英文模式')
+  await press(band, '译成英文')
+  await clock.settle()
+  expect(fills).toEqual([EN])
+  expect(submitted).toEqual([])
+  expect(asks.length).toBe(1)
+  await band.unmount()
+
+  // Enter on the English sends it, and the row shows the Chinese.
+  await $.prompt.submit(typed(EN))
+  expect(submitted.map(s => s.text)).toEqual([EN])
+  expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
+  const user = await $.ui.mount(row('UserMessage', 'u-t', EN))
+  expect(await shown(user)).toBe(ZH)
+  await user.unmount()
+})
+
+test('「译成英文」 on a box with no Chinese calls nothing', { options: OPTIONS }, async ($, on) => {
+  const { asks, fills, clock } = engine(on, { draft: 'already English' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'en', args: 'on' } as never)
+  const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
+  await press(band, '译成英文')
+  await clock.settle()
+  expect(asks).toEqual([])
+  expect(fills).toEqual([])
+  await band.unmount()
 })

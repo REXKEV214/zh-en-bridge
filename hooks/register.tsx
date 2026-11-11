@@ -302,6 +302,34 @@ async function putInBox($: EngineInterface, text: string) {
   if (!r.isFilled) await update($, draftAtom, cur => (cur ? { ...cur, isInBand: true } : cur))
 }
 
+/**
+ * Translates what the prompt box holds and writes the English in its place,
+ * before anything is submitted: the way to confirm a translation without Enter
+ * (on the desktop app, Enter draws the message in the chat before a hook can
+ * hold it back).
+ */
+async function translateBox($: EngineInterface, options: PluginOptions) {
+  const box = await $.prompt.read()
+  const zh = box.text.trim()
+  if (!zh) {
+    $.ui.toast('输入框是空的，或者当前界面读不到输入框')
+    return
+  }
+  if (!hasChinese(zh)) {
+    $.ui.toast('输入框里没有中文，直接发送就行')
+    return
+  }
+  $.ui.status('正在把输入框译成英文…')
+  const r = await translate($, options, TO_ENGLISH, zh)
+  $.ui.status('中→英 发送：开')
+  if (r.error !== undefined) {
+    await update($, draftAtom, () => ({ zh, error: r.error, isInBand: true }))
+    return
+  }
+  await update($, draftAtom, () => ({ zh, en: r.text }))
+  await putInBox($, r.text)
+}
+
 /** Sends the band's draft: the English (`en`) or the Chinese as typed (`zh`). */
 async function sendDraft($: EngineInterface, which: 'en' | 'zh') {
   const draft = await read($, draftAtom)
@@ -516,8 +544,11 @@ export const register: Register = (on, options) => {
           variant={enabled ? 'primary' : 'secondary'}
           onPress={() => setEnabled($, !enabled)}
         />
+        {enabled && !draft?.isInBand ? (
+          <Button key="translate-box" label="译成英文" variant="secondary" onPress={() => translateBox($, options)} />
+        ) : null}
         <Text size="caption" color="subtle">
-          {enabled ? '中文先译成英文给你确认，回复译回中文' : '按原文发送'}
+          {enabled ? '先点「译成英文」，确认后再按 Enter 发送；回复译回中文' : '按原文发送'}
         </Text>
       </Box>
     )

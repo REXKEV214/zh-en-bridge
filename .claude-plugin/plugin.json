@@ -1,6 +1,6 @@
 {
   "name": "zh-en-bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Optional per-message bridge: with English mode on, your Chinese prompt is translated to English by Qwen before it is sent, Claude replies in English, and replies are shown translated back into Chinese; the model's context stays English.",
   "types": "./types/index.d.ts",
   "userConfig": {
