@@ -17,7 +17,7 @@ Many Chinese-speaking developers think and type faster in Chinese, yet often get
 ## Features
 
 - **译成英文** button above the prompt box: translates the Chinese in the box in place, then you review and send.
-- Your sent messages show your original Chinese; a **发送的英文** (English sent) toggle shows what was actually sent, and edited translations are marked as such.
+- Your sent messages show the English that was actually sent; a **中文原文** (Chinese original) toggle shows the Chinese you wrote, and edited translations are marked as such.
 - A **中文译文** (Chinese translation) toggle under Claude's replies switches between the Chinese translation and the English original. Replies to translated prompts are translated automatically; other replies get the button only when their prose (excluding code) has at least 20 English words, and are translated on demand.
 - Code, commands, paths, identifiers and URLs are kept as written in both directions.
 - API, model and both translation prompts are configurable.
@@ -51,7 +51,7 @@ Then set an API key (below) and start a new session.
 
 **Reading the conversation**
 
-- Your translated messages show the Chinese you wrote. Turn on **发送的英文** to see the English that was sent.
+- Your translated messages show the English that was sent. Turn on **中文原文** to see the Chinese you wrote; turn it off to go back to the English.
 - Turn on **中文译文** under a reply to read it in Chinese; turn it off for the English original.
 - Subagent output is not translated.
 

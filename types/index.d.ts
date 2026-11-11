@@ -2,8 +2,8 @@
 export type SentPrompt = {
   /** What the person typed. */
   zh: string
-  /** True while the row shows the English that was sent. */
-  showEnglish?: boolean
+  /** True while the row shows the Chinese the person typed instead of the English that was sent. */
+  showChinese?: boolean
   /** True when the person changed the English draft before sending it. */
   isEdited?: boolean
 }

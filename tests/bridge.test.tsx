@@ -123,7 +123,7 @@ test('without the button a prompt goes out as typed and nothing is called', { op
 })
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  test(`the button puts the English in the box; Enter sends it; rows show Chinese (${surface})`, { options: OPTIONS }, async ($, on) => {
+  test(`the button puts the English in the box; Enter sends it; rows show English, Chinese on request (${surface})`, { options: OPTIONS }, async ($, on) => {
     const { asks, submitted, fills, clock, session } = engine(on, { draft: ZH })
     await $.session.start({ cwd: '/', surface, isInteractive: true })
 
@@ -143,15 +143,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
     expect(asks.length).toBe(1)
 
-    // The row stores the English; the screen shows what was typed.
+    // The row stores and shows the English; the button reveals what was typed.
     const user = await $.ui.mount(row('UserMessage', 'u-1', EN, surface))
-    expect(await shown(user)).toBe(ZH)
-    expect((await user.find({ type: 'Text', text: /已译成英文发送/ })) !== undefined).toBe(true)
-    await press(user, '发送的英文')
     expect(await shown(user)).toBe(EN)
-    expect((await button(user, '发送的英文'))?.props.variant).toBe('primary')
-    await press(user, '发送的英文')
+    expect((await button(user, '中文原文'))?.props.variant).toBe('secondary')
+    expect((await user.find({ type: 'Text', text: /已译成英文发送/ })) !== undefined).toBe(true)
+    await press(user, '中文原文')
     expect(await shown(user)).toBe(ZH)
+    expect((await button(user, '中文原文'))?.props.variant).toBe('primary')
+    await press(user, '中文原文')
+    expect(await shown(user)).toBe(EN)
     await user.unmount()
 
     // The reply to a translated prompt is translated up front; a subagent's is not.
@@ -187,6 +188,8 @@ test('an edited translation goes out as edited and says so', { options: OPTIONS 
   await $.prompt.submit(typed(edited))
   expect(submitted.map(s => s.text)).toEqual([edited])
   const user = await $.ui.mount(row('UserMessage', 'u-e', edited))
+  expect(await shown(user)).toBe(edited)
+  await press(user, '中文原文')
   expect(await shown(user)).toBe(ZH)
   expect((await user.find({ type: 'Text', text: /经你修改后发送/ })) !== undefined).toBe(true)
   await user.unmount()
@@ -204,7 +207,7 @@ test('Chinese sent after a translation goes out as typed, and its reply is left 
   // The draft is gone: a later English prompt is not taken for it.
   await $.prompt.submit(typed('hello'))
   const user = await $.ui.mount(row('UserMessage', 'u-h', 'hello'))
-  expect(await button(user, '发送的英文')).toBeFalsy()
+  expect(await button(user, '中文原文')).toBeFalsy()
   await user.unmount()
 })
 
@@ -229,6 +232,8 @@ test('with no writable prompt box the translation waits in the band, editable', 
   await band.unmount()
 
   const user = await $.ui.mount(row('UserMessage', 'u-b', edited))
+  expect(await shown(user)).toBe(edited)
+  await press(user, '中文原文')
   expect(await shown(user)).toBe(ZH)
   await user.unmount()
 })

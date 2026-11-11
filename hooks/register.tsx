@@ -273,7 +273,7 @@ async function ensureReply($: EngineInterface, options: PluginOptions, hash: str
   if (start) await translateReply($, options, hash, source)
 }
 
-/** Records that `sent` went out for what the person typed, so its row shows the Chinese. */
+/** Records that `sent` went out for what the person typed, so its row can show the Chinese on request. */
 async function remember($: EngineInterface, zh: string, sent: string, isEdited: boolean) {
   const hash = await hashOf(sent)
   const one: SentPrompt = { zh, ...(isEdited ? { isEdited: true } : {}) }
@@ -391,18 +391,18 @@ export const register: Register = (on, options) => {
     const toggle = async () => {
       await update($, bridgeAtom, cur => {
         const one = cur.prompts[hash]
-        return one ? { ...cur, prompts: { ...cur.prompts, [hash]: { ...one, showEnglish: !one.showEnglish } } } : cur
+        return one ? { ...cur, prompts: { ...cur.prompts, [hash]: { ...one, showChinese: !one.showChinese } } } : cur
       })
     }
-    const drawn = sent.showEnglish ? await next(e) : await next({ ...e, props: { ...e.props, text: sent.zh } })
+    const drawn = sent.showChinese ? await next({ ...e, props: { ...e.props, text: sent.zh } }) : await next(e)
     return (
       <Box flexDirection="column">
         {drawn}
         <Box flexDirection="row" gap={1} alignItems="center">
           <Button
             key={`prompt-${hash}`}
-            label="发送的英文"
-            variant={sent.showEnglish ? 'primary' : 'secondary'}
+            label="中文原文"
+            variant={sent.showChinese ? 'primary' : 'secondary'}
             onPress={toggle}
           />
           <Text size="caption" color="subtle">
