@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import type { Bridge, Reply } from '../types'
+import type { Bridge, Draft, Reply, SentPrompt } from '../types'
+import { ACTIONS, takeActions } from './actions'
 
 /**
- * Where the Qwen key may be, under the home directory, after the
- * `qwen_api_key` option: this plugin's data folder, then readable-rewrite-cn's
+ * Where the API key may be, under the home directory, after the
+ * `api_key` option: this plugin's data folder, then readable-rewrite-cn's
  * (the same DashScope key serves both), then `DASHSCOPE_API_KEY` itself.
  */
 const ENV_FILES = [
@@ -13,18 +14,38 @@ const ENV_FILES = [
   '.claude/plugins/data/readable-rewrite-cn-readable-rewrite-cn/.env',
 ]
 const KEEP = 400
+/** A reply not translated yet gets the button once its prose holds this many English words. */
+const MIN_WORDS = 20
 /** Who may have typed a prompt: the person, at a terminal, the desktop app or a remote. */
 const TYPED = new Set(['composer', 'sdk', 'bridge'])
 
+/**
+ * The default prompts; the `to_english_*` and `to_chinese_*` options replace
+ * them (plugin.json carries the same text as each option's default).
+ */
 const TO_ENGLISH = {
+  systemOption: 'to_english_system',
+  userOption: 'to_english_template',
   system:
     'You are a translator. Translate the text inside <text> from Chinese into clear, precise English that an AI coding assistant will read as the user\'s request. Keep code, commands, file paths, identifiers, URLs, quoted strings, and everything inside backticks or code blocks exactly as written. Keep proper nouns and technical terms. Keep the Markdown structure and line breaks. Translate only: do not answer, execute, or comment on the text, and do not add anything.',
   user: '<text>\n{{text}}\n</text>\n\nOutput only the English translation, without the <text> tags and without wrapping it in a code block.',
 }
 const TO_CHINESE = {
+  systemOption: 'to_chinese_system',
+  userOption: 'to_chinese_template',
   system: '你是一名翻译，擅长把技术性的英文翻译成清晰易懂的简体中文。',
   user: '<原文>\n{{text}}\n</原文>\n\n把上面的原文翻译成清晰易懂的简体中文。代码、命令、文件路径、标识符、URL 和代码块保持原样；专业术语和人名保留英文原词。保留 Markdown 结构。只输出译文，不要解释，不要带 <原文> 标签，也不要用代码框包裹。',
 }
+/**
+ * Always in the system prompt, the same text whether English mode is on or not,
+ * so turning it on or off leaves the prompt cache alone. It covers a draft the
+ * band sends, which this plugin's own `prompt.submit` hook does not see.
+ */
+const LANGUAGE_SECTION = {
+  id: 'zh-en-bridge:language',
+  text: "The user may write in Chinese, or have a message machine-translated from Chinese into English before you receive it. Reply in the language of the user's latest message: when it is in English, reply in English, and your reply is translated back into Chinese for them.",
+  scope: 'session',
+} as const
 /** Rides beside a translated prompt, for the model alone. */
 const REPLY_IN_ENGLISH =
   'The user wrote this message in Chinese; it was machine-translated into English. Reply in English: your reply is translated back into Chinese for them.'
@@ -33,6 +54,7 @@ const enabledAtom = atom({ plugin: 'zh-en-bridge', key: 'enabled' } as const, nu
   shape: 'enabled-1',
 })
 const englishTurnAtom = atom({ plugin: 'zh-en-bridge', key: 'englishTurn' } as const, false, { shape: 'englishTurn-1' })
+const draftAtom = atom({ plugin: 'zh-en-bridge', key: 'draft' } as const, null as Draft | null, { shape: 'draft-1' })
 const bridgeAtom = atom(
   { plugin: 'zh-en-bridge', key: 'bridge' } as const,
   { prompts: {}, replies: {}, byRow: {}, order: [] } as Bridge,
@@ -65,6 +87,11 @@ export function isMostlyEnglish(text: string): boolean {
   const han = prose.match(/\p{Script=Han}/gu)?.length ?? 0
   const latin = prose.match(/[A-Za-z]/g)?.length ?? 0
   return latin >= 2 && latin > han * 2
+}
+
+/** English words in the prose, code left out. */
+export function englishWords(text: string): number {
+  return stripCode(text).match(/[A-Za-z]+(?:'[A-Za-z]+)?/g)?.length ?? 0
 }
 
 function stripCode(text: string): string {
@@ -134,7 +161,7 @@ async function fromEnvFiles($: EngineInterface, name: string): Promise<string> {
 }
 
 async function apiKey($: EngineInterface, options: PluginOptions): Promise<string> {
-  const fromOption = str(options, 'qwen_api_key')
+  const fromOption = str(options, 'api_key')
   if (fromOption) return fromOption
   const fromFile = await fromEnvFiles($, 'DASHSCOPE_API_KEY')
   if (fromFile) return fromFile
@@ -145,29 +172,34 @@ async function apiKey($: EngineInterface, options: PluginOptions): Promise<strin
   }
 }
 
+/** A direction's default prompts and the options that replace them. */
+type Prompts = { system: string; user: string; systemOption: string; userOption: string }
+
 type Result = { text: string; error?: undefined } | { text?: undefined; error: string; isRetryable?: boolean }
 
-async function callQwen(
+async function callModel(
   $: EngineInterface,
   options: PluginOptions,
-  prompts: { system: string; user: string },
+  prompts: Prompts,
   source: string,
 ): Promise<Result> {
+  const system = str(options, prompts.systemOption) || prompts.system
+  const template = str(options, prompts.userOption) || prompts.user
   const key = await apiKey($, options)
-  const model = str(options, 'qwen_model')
-  const baseUrl = str(options, 'qwen_base_url').replace(/\/+$/, '')
+  const model = str(options, 'model')
+  const baseUrl = str(options, 'base_url').replace(/\/+$/, '')
   if (!key || !model || !baseUrl)
     return {
-      error: `通义未配置 ${!key ? 'API Key（qwen_api_key、.env 或环境变量 DASHSCOPE_API_KEY）' : !model ? '模型 ID' : 'Base URL'}`,
+      error: `翻译模型未配置 ${!key ? 'API Key（api_key、.env 或环境变量 DASHSCOPE_API_KEY）' : !model ? '模型 ID（model）' : 'Base URL（base_url）'}`,
     }
 
   let extra: Record<string, unknown> = {}
-  const extraRaw = str(options, 'qwen_extra_body')
+  const extraRaw = str(options, 'extra_body')
   if (extraRaw) {
     try {
       extra = JSON.parse(extraRaw)
     } catch {
-      return { error: 'qwen_extra_body 不是合法 JSON' }
+      return { error: 'extra_body 不是合法 JSON' }
     }
   }
   const body = {
@@ -175,8 +207,8 @@ async function callQwen(
     model,
     stream: false,
     messages: [
-      { role: 'system', content: prompts.system },
-      { role: 'user', content: prompts.user.split('{{text}}').join(source) },
+      ...(system ? [{ role: 'system', content: system }] : []),
+      { role: 'user', content: template.includes('{{text}}') ? template.split('{{text}}').join(source) : `${template}\n\n${source}` },
     ],
   }
 
@@ -216,11 +248,11 @@ async function callQwen(
 async function translate(
   $: EngineInterface,
   options: PluginOptions,
-  prompts: { system: string; user: string },
+  prompts: Prompts,
   source: string,
 ): Promise<Result> {
-  const first = await callQwen($, options, prompts, source)
-  return first.error !== undefined && first.isRetryable ? callQwen($, options, prompts, source) : first
+  const first = await callModel($, options, prompts, source)
+  return first.error !== undefined && first.isRetryable ? callModel($, options, prompts, source) : first
 }
 
 async function translateReply($: EngineInterface, options: PluginOptions, hash: string, source: string) {
@@ -253,14 +285,57 @@ async function isEnabled($: EngineInterface, options: PluginOptions): Promise<bo
 
 async function setEnabled($: EngineInterface, value: boolean) {
   await update($, enabledAtom, () => value)
+  if (!value) await update($, draftAtom, () => null)
   $.ui.status(value ? '中→英 发送：开' : undefined)
+}
+
+/** Records that `sent` went out for what the person typed, so its row shows the Chinese. */
+async function remember($: EngineInterface, zh: string, sent: string, isEdited: boolean) {
+  const hash = await hashOf(sent)
+  const one: SentPrompt = { zh, ...(isEdited ? { isEdited: true } : {}) }
+  await update($, bridgeAtom, cur => trim({ ...cur, prompts: { ...cur.prompts, [hash]: one }, order: withOrder(cur, hash) }))
+}
+
+/** Puts the English draft in the prompt box; where the surface has no box a plugin can write, the band holds it. */
+async function putInBox($: EngineInterface, text: string) {
+  const r = await $.prompt.fill({ text, mode: 'replace' })
+  if (!r.isFilled) await update($, draftAtom, cur => (cur ? { ...cur, isInBand: true } : cur))
+}
+
+/** Sends the band's draft: the English (`en`) or the Chinese as typed (`zh`). */
+async function sendDraft($: EngineInterface, which: 'en' | 'zh') {
+  const draft = await read($, draftAtom)
+  if (!draft) return
+  const text = (draft.edited ?? (which === 'en' ? draft.en : draft.zh) ?? draft.zh).trim()
+  if (!text) return
+  if (which === 'en') await remember($, draft.zh, text, text !== draft.en?.trim())
+  await update($, englishTurnAtom, () => which === 'en')
+  await update($, draftAtom, () => null)
+  await $.prompt.submit({ text, asUser: true })
+}
+
+/** Translates the band's Chinese again, as the person may have edited it. */
+async function retryDraft($: EngineInterface, options: PluginOptions) {
+  const draft = await read($, draftAtom)
+  if (!draft) return
+  const zh = (draft.edited ?? draft.zh).trim()
+  if (!zh) return
+  await update($, draftAtom, cur => (cur ? { ...cur, zh, edited: undefined, error: undefined, isTranslating: true } : cur))
+  const r = await translate($, options, TO_ENGLISH, zh)
+  await update($, draftAtom, cur =>
+    !cur
+      ? cur
+      : r.error !== undefined
+        ? { zh, error: r.error, isInBand: true }
+        : { zh, en: r.text, isInBand: true },
+  )
 }
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'en',
-      description: '英文模式：/en on（中文 prompt 译成英文发送，回复译回中文）| off | 不带参数切换',
+      description: '英文模式：/en on（中文 prompt 先译成英文给你确认，回复译回中文）| off | 不带参数切换',
     })
     $.ui.status((await isEnabled($, options)) ? '中→英 发送：开' : undefined)
     // A reload drops calls in flight: mark them failed so a press retries.
@@ -270,7 +345,13 @@ export const register: Register = (on, options) => {
         if (one.status === 'pending') out = setReply(out, hash, { ...one, status: 'failed', error: 'mod 重新加载，请求中断' })
       return out
     })
+    await update($, draftAtom, cur => (cur?.isTranslating ? { zh: cur.zh, error: 'mod 重新加载，请求中断', isInBand: true } : cur))
     return next(e)
+  })
+
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    return { sections: [...composed.sections.filter(s => s.id !== LANGUAGE_SECTION.id), LANGUAGE_SECTION] }
   })
 
   on('command.run', { command: 'en' }, async ($, e) => {
@@ -281,19 +362,33 @@ export const register: Register = (on, options) => {
     await setEnabled($, value)
     return {
       text: value
-        ? '英文模式已开：之后发出的中文会先译成英文，Claude 用英文回复，界面显示中文译文。'
+        ? '英文模式已开：发出的中文会先译成英文给你确认，Claude 用英文回复，界面显示中文译文。'
         : '英文模式已关：prompt 按原文发送。',
     }
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.command || e.isMeta || !TYPED.has(e.origin.kind)) return next(e)
+    if (e.command) return next(e)
+    // A draft this plugin sends from the band: `sendDraft` has already recorded it.
+    if (e.origin.kind === 'plugin') {
+      if (e.origin.name !== 'zh-en-bridge' || !(await read($, englishTurnAtom))) return next(e)
+      return next({ ...e, context: [...(e.context ?? []), REPLY_IN_ENGLISH] })
+    }
+    if (e.isMeta || !TYPED.has(e.origin.kind)) return next(e)
     if (!(await isEnabled($, options))) {
       await update($, englishTurnAtom, () => false)
       return next(e)
     }
     const context = [...(e.context ?? []), REPLY_IN_ENGLISH]
+
+    // No Chinese left: the English draft as the person confirmed or edited it,
+    // or English they typed themselves. Either way it goes out as it stands.
     if (!hasChinese(e.text)) {
+      const draft = await read($, draftAtom)
+      if (draft?.en !== undefined) {
+        await remember($, draft.zh, e.text, e.text.trim() !== draft.en.trim())
+        await update($, draftAtom, () => null)
+      }
       await update($, englishTurnAtom, () => true)
       return next({ ...e, context })
     }
@@ -301,17 +396,17 @@ export const register: Register = (on, options) => {
     $.ui.status('正在把 prompt 译成英文…')
     const r = await translate($, options, TO_ENGLISH, e.text)
     $.ui.status('中→英 发送：开')
+    const attached = e.attachments?.length ? '附带的图片或文件需要重新添加。' : ''
     if (r.error !== undefined) {
-      $.ui.toast(`翻译失败，已按中文原文发送：${r.error}`)
-      await update($, englishTurnAtom, () => false)
-      return next(e)
+      // Nothing goes out unconfirmed: the band holds the Chinese, to retry or send as typed.
+      await update($, draftAtom, () => ({ zh: e.text, error: r.error, isInBand: true }))
+      return { drop: `翻译失败（${r.error}），这条没有发出。输入框上方可以重试翻译，或直接发送中文原文。${attached}` }
     }
-    const hash = await hashOf(r.text)
-    await update($, bridgeAtom, cur =>
-      trim({ ...cur, prompts: { ...cur.prompts, [hash]: { zh: e.text } }, order: withOrder(cur, hash) }),
-    )
-    await update($, englishTurnAtom, () => true)
-    return next({ ...e, text: r.text, context })
+
+    // The English goes back for the person to read, edit and send; this submission stops here.
+    await update($, draftAtom, () => ({ zh: e.text, en: r.text }))
+    $.clock.after(0, () => void putInBox($, r.text))
+    return { drop: `已译成英文，还没有发出：检查或修改后再发送。${attached}` }
   })
 
   // Claude's replies in an English turn are translated for display; the row
@@ -346,15 +441,15 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {drawn}
         <Box flexDirection="row" gap={1} alignItems="center">
-          <Text size="caption" color="subtle">
-            {sent.showEnglish ? '实际发送的英文' : '已译成英文发送'}
-          </Text>
           <Button
             key={`prompt-${hash}`}
-            label={sent.showEnglish ? '看中文' : '看英文'}
-            variant="secondary"
+            label="发送的英文"
+            variant={sent.showEnglish ? 'primary' : 'secondary'}
             onPress={toggle}
           />
+          <Text size="caption" color="subtle">
+            {sent.isEdited ? '已译成英文，经你修改后发送' : '已译成英文发送'}
+          </Text>
         </Box>
       </Box>
     )
@@ -365,65 +460,45 @@ export const register: Register = (on, options) => {
     const bridge = await read($, bridgeAtom)
     const hash = bridge.byRow[e.requestId] ?? (await hashOf(e.props.text))
     const reply = bridge.replies[hash]
-    // An English reply from a turn sent as typed gets a button, nothing more.
-    if (!reply && !isMostlyEnglish(e.props.text)) return next(e)
+    // A reply not yet translated gets the button once it holds enough English.
+    if (!reply && englishWords(e.props.text) < MIN_WORDS) return next(e)
 
     const { Box, Text, Button } = $.ui.resolve(e)
     const source = reply?.source ?? e.props.text
-    const translateNow = () => {
+    // One button: lit while the translation is chosen; pressing it again goes back to the original.
+    const isOn = !!reply && reply.status !== 'failed' && !reply.showOriginal
+    const press = async () => {
+      if (reply && reply.status !== 'failed') {
+        await update($, bridgeAtom, cur => {
+          const one = cur.replies[hash]
+          return one ? setReply(cur, hash, { ...one, showOriginal: !one.showOriginal }) : cur
+        })
+        return
+      }
       $.clock.after(0, () => void ensureReply($, options, hash, source))
     }
-    const toggle = async () => {
-      await update($, bridgeAtom, cur => {
-        const one = cur.replies[hash]
-        return one ? setReply(cur, hash, { ...one, showOriginal: !one.showOriginal }) : cur
-      })
-    }
-
-    if (reply?.status === 'done' && reply.text) {
-      const drawn = reply.showOriginal ? await next(e) : await next({ ...e, props: { ...e.props, text: reply.text } })
-      return (
-        <Box flexDirection="column">
-          {drawn}
-          <Box flexDirection="row" gap={1} alignItems="center" marginTop={1}>
-            <Text size="caption" color="subtle">
-              {reply.showOriginal ? 'Claude 的英文原文' : '通义译文'}
-            </Text>
-            <Button
-              key={`reply-${hash}`}
-              label={reply.showOriginal ? '看中文' : '看原文'}
-              variant="secondary"
-              onPress={toggle}
-            />
-          </Box>
-        </Box>
-      )
-    }
-
-    const footer =
-      reply?.status === 'pending' ? (
+    const status =
+      isOn && reply?.status === 'pending' ? (
         <Text size="caption" color="subtle">
           正在译成中文…
         </Text>
-      ) : (
-        <Box flexDirection="row" gap={1} alignItems="center">
-          {reply?.status === 'failed' ? (
-            <Text size="caption" color="warning">
-              翻译失败（{reply.error ?? '未知原因'}）
-            </Text>
-          ) : null}
-          <Button
-            key={`reply-${hash}`}
-            label={reply?.status === 'failed' ? '重试翻译' : '译成中文'}
-            variant="secondary"
-            onPress={translateNow}
-          />
-        </Box>
-      )
+      ) : reply?.status === 'failed' ? (
+        <Text size="caption" color="warning">
+          翻译失败（{reply.error ?? '未知原因'}），再点一次重试
+        </Text>
+      ) : null
+    const drawn =
+      isOn && reply?.status === 'done' && reply.text ? await next({ ...e, props: { ...e.props, text: reply.text } }) : await next(e)
+    // Another plugin's buttons under this reply join this one's on a single row.
+    const { rest, actions } = takeActions(drawn)
     return (
       <Box flexDirection="column">
-        {await next(e)}
-        <Box marginTop={1}>{footer}</Box>
+        {rest}
+        <Box key={ACTIONS} flexDirection="row" gap={1} alignItems="center" marginTop={1}>
+          {actions}
+          <Button key={`reply-${hash}`} label="中文译文" variant={isOn ? 'primary' : 'secondary'} onPress={press} />
+          {status}
+        </Box>
       </Box>
     )
   })
@@ -431,18 +506,57 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const enabled = await isEnabled($, options)
-    const { Box, Text, Button } = $.ui.resolve(e)
-    return (
+    const draft = await read($, draftAtom)
+    const { Box, Text, Button, Input } = $.ui.resolve(e)
+    const toggle = (
       <Box flexDirection="row" gap={1} alignItems="center">
-        <Text size="caption" color="subtle">
-          {enabled ? '发送前把中文译成英文，回复译回中文' : '按原文发送'}
-        </Text>
         <Button
           key="toggle-english"
-          label={enabled ? '英文模式：开' : '英文模式：关'}
+          label="英文模式"
           variant={enabled ? 'primary' : 'secondary'}
           onPress={() => setEnabled($, !enabled)}
         />
+        <Text size="caption" color="subtle">
+          {enabled ? '中文先译成英文给你确认，回复译回中文' : '按原文发送'}
+        </Text>
+      </Box>
+    )
+    if (!draft?.isInBand) return toggle
+
+    const isFailed = draft.error !== undefined
+    const value = draft.edited ?? (isFailed ? draft.zh : (draft.en ?? draft.zh))
+    const setEdited = (v: string) => void update($, draftAtom, cur => (cur ? { ...cur, edited: v } : cur))
+    const discard = () => update($, draftAtom, () => null)
+    return (
+      <Box flexDirection="column" gap={1}>
+        {toggle}
+        <Text size="caption" color={isFailed ? 'warning' : 'subtle'}>
+          {draft.isTranslating
+            ? '正在重新翻译…'
+            : isFailed
+              ? `翻译失败（${draft.error}）：可以修改后重试，或直接发送中文原文`
+              : '英文草稿：检查或修改后发送'}
+        </Text>
+        <Input
+          key="draft"
+          value={value}
+          rows={Math.min(8, Math.max(3, value.split('\n').length + 1))}
+          submitLabel={isFailed ? '重试翻译' : '发送'}
+          onInput={setEdited}
+          onSubmit={v => {
+            setEdited(v)
+            void (isFailed ? retryDraft($, options) : sendDraft($, 'en'))
+          }}
+        />
+        <Box flexDirection="row" gap={1}>
+          {isFailed ? (
+            <Button key="draft-retry" label="重试翻译" variant="primary" onPress={() => retryDraft($, options)} />
+          ) : (
+            <Button key="draft-send-en" label="发送英文" variant="primary" onPress={() => sendDraft($, 'en')} />
+          )}
+          <Button key="draft-send-zh" label="发送中文原文" variant="secondary" onPress={() => sendDraft($, 'zh')} />
+          <Button key="draft-discard" label="放弃" variant="secondary" onPress={discard} />
+        </Box>
       </Box>
     )
   })

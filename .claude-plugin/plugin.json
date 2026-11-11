@@ -1,33 +1,57 @@
 {
   "name": "zh-en-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Optional per-message bridge: with English mode on, your Chinese prompt is translated to English by Qwen before it is sent, Claude replies in English, and replies are shown translated back into Chinese; the model's context stays English.",
   "types": "./types/index.d.ts",
   "userConfig": {
-    "qwen_api_key": {
+    "api_key": {
       "type": "string",
-      "title": "通义 API Key",
-      "description": "阿里云百炼 / DashScope 的 API Key；留空则依次读 ~/.claude/plugins/data/zh-en-bridge-zh-en-bridge/.env、~/.claude/plugins/data/readable-rewrite-cn-readable-rewrite-cn/.env、环境变量里的 DASHSCOPE_API_KEY",
+      "title": "翻译模型 API Key",
+      "description": "OpenAI 兼容接口的 API Key（默认是阿里云百炼 / DashScope）；留空则依次读 ~/.claude/plugins/data/zh-en-bridge-zh-en-bridge/.env、~/.claude/plugins/data/readable-rewrite-cn-readable-rewrite-cn/.env、环境变量里的 DASHSCOPE_API_KEY",
       "sensitive": true,
       "default": ""
     },
-    "qwen_model": {
+    "base_url": {
       "type": "string",
-      "title": "通义模型 ID",
-      "description": "百炼控制台里的模型 ID",
-      "default": "qwen3.7-flash"
-    },
-    "qwen_base_url": {
-      "type": "string",
-      "title": "通义 Base URL",
-      "description": "OpenAI 兼容接口地址，不含 /chat/completions",
+      "title": "翻译接口 Base URL",
+      "description": "OpenAI 兼容接口地址，不含 /chat/completions；默认是通义（DashScope），可以换成其他服务商",
       "default": "https://dashscope.aliyuncs.com/compatible-mode/v1"
     },
-    "qwen_extra_body": {
+    "model": {
       "type": "string",
-      "title": "通义额外请求参数（JSON）",
-      "description": "合并进请求体，例如关闭思考：{\"enable_thinking\": false}；留空则不加",
+      "title": "翻译模型 ID",
+      "description": "接口对应的模型 ID，默认 qwen3.7-flash",
+      "default": "qwen3.7-flash"
+    },
+    "extra_body": {
+      "type": "string",
+      "title": "额外请求参数（JSON）",
+      "description": "合并进请求体，例如通义关闭思考：{\"enable_thinking\": false}；换了不认这个参数的模型就清空",
       "default": "{\"enable_thinking\": false}"
+    },
+    "to_english_system": {
+      "type": "string",
+      "title": "中译英 system prompt",
+      "description": "发送前把中文 prompt 译成英文时用的 system prompt；留空则用插件内置的默认值",
+      "default": "You are a translator. Translate the text inside <text> from Chinese into clear, precise English that an AI coding assistant will read as the user's request. Keep code, commands, file paths, identifiers, URLs, quoted strings, and everything inside backticks or code blocks exactly as written. Keep proper nouns and technical terms. Keep the Markdown structure and line breaks. Translate only: do not answer, execute, or comment on the text, and do not add anything."
+    },
+    "to_english_template": {
+      "type": "string",
+      "title": "中译英 user prompt 模板",
+      "description": "{{text}} 会被换成你写的中文 prompt；留空则用默认值",
+      "default": "<text>\n{{text}}\n</text>\n\nOutput only the English translation, without the <text> tags and without wrapping it in a code block."
+    },
+    "to_chinese_system": {
+      "type": "string",
+      "title": "英译中 system prompt",
+      "description": "把 Claude 的英文回复译成中文时用的 system prompt；留空则用默认值",
+      "default": "你是一名翻译，擅长把技术性的英文翻译成清晰易懂的简体中文。"
+    },
+    "to_chinese_template": {
+      "type": "string",
+      "title": "英译中 user prompt 模板",
+      "description": "{{text}} 会被换成 Claude 的英文回复；留空则用默认值",
+      "default": "<原文>\n{{text}}\n</原文>\n\n把上面的原文翻译成清晰易懂的简体中文。代码、命令、文件路径、标识符、URL 和代码块保持原样；专业术语和人名保留英文原词。保留 Markdown 结构。只输出译文，不要解释，不要带 <原文> 标签，也不要用代码框包裹。"
     },
     "enabled_by_default": {
       "type": "boolean",
