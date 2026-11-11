@@ -466,3 +466,81 @@ test('with no key option and no .env the environment variable is used', { option
   await translateBox($, () => clock.settle())
   expect(asks[0]?.headers.Authorization).toBe('Bearer key-from-env')
 })
+
+test('what is typed while the translation runs is kept, and the translation is dropped', { options: OPTIONS }, async ($, on) => {
+  const LONGER = ZH + '，另外顺便看看超时'
+  let box: { text: string } | undefined
+  const eng = engine(on, {
+    draft: ZH,
+    answer: () => {
+      if (box) box.text = LONGER
+      return undefined
+    },
+  })
+  box = eng.box
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await translateBox($, () => eng.clock.settle())
+  expect(eng.fills).toEqual([])
+  expect(eng.box.text).toBe(LONGER)
+  expect(eng.toasts.join('\n')).toContain('翻译期间输入框有改动')
+
+  // No draft was kept: the prompt goes out as typed.
+  await $.prompt.submit(typed(LONGER))
+  const user = await $.ui.mount(row('UserMessage', 'u-k', LONGER))
+  expect(await button(user, '中文原文')).toBeFalsy()
+  await user.unmount()
+})
+
+test('还原中文 puts the Chinese back and the next send goes out as typed', { options: OPTIONS }, async ($, on) => {
+  const { asks, fills, box, clock } = engine(on, { draft: ZH })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const before = await $.ui.mount(row('AbovePrompt', 'band', ''))
+  expect(await button(before, '还原中文')).toBeFalsy()
+  await before.unmount()
+
+  await translateBox($, () => clock.settle())
+  expect(box.text).toBe(EN)
+  const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
+  expect((await band.find({ type: 'Text', text: /下一条发送按译文记录/ })) !== undefined).toBe(true)
+  await press(band, '还原中文')
+  await clock.settle()
+  expect(fills).toEqual([EN, ZH])
+  expect(box.text).toBe(ZH)
+  expect(await button(band, '还原中文')).toBeFalsy()
+  await band.unmount()
+
+  const other = 'Run the test suite and tell me which cases fail, then stop.'
+  await $.prompt.submit(typed(other))
+  const user = await $.ui.mount(row('UserMessage', 'u-r', other))
+  expect(await button(user, '中文原文')).toBeFalsy()
+  await user.unmount()
+  await $.session.append(reply('row-r2'))
+  await clock.settle()
+  expect(asks.length).toBe(1)
+})
+
+test('a draft left in the box does not outlive a reload; the Chinese sent unchanged is no translation', { options: OPTIONS }, async ($, on) => {
+  const { asks, box, clock } = engine(on, { draft: ZH })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await translateBox($, () => clock.settle())
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const other = 'Run the test suite and tell me which cases fail, then stop.'
+  await $.prompt.submit(typed(other))
+  const sent = await $.ui.mount(row('UserMessage', 'u-s', other))
+  expect(await button(sent, '中文原文')).toBeFalsy()
+  await sent.unmount()
+  await $.session.append(reply('row-s'))
+  await clock.settle()
+  expect(asks.length).toBe(1)
+
+  // Translated, then undone: the Chinese goes out and is shown as typed.
+  box.text = ZH
+  await translateBox($, () => clock.settle())
+  await $.prompt.submit(typed(ZH))
+  const zh = await $.ui.mount(row('UserMessage', 'u-z', ZH))
+  expect(await button(zh, '中文原文')).toBeFalsy()
+  await zh.unmount()
+  const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
+  expect(await button(band, '还原中文')).toBeFalsy()
+  await band.unmount()
+})

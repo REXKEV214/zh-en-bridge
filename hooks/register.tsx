@@ -307,8 +307,25 @@ async function translateBox($: EngineInterface, options: PluginOptions) {
     $.ui.toast(`翻译失败（${r.error}），输入框里的中文没有改动`)
     return
   }
+  // What the person typed (or sent) while the call ran stays: the translation is of an older text.
+  if ((await $.prompt.read()).text.trim() !== zh) {
+    $.ui.toast('翻译期间输入框有改动，译文没有写入；需要的话再点一次「译成英文」')
+    return
+  }
   await update($, draftAtom, () => ({ zh, en: r.text }))
   await putInBox($, r.text)
+}
+
+/** Puts back the Chinese the button translated and forgets the draft, so the next send goes out as typed. */
+async function restoreChinese($: EngineInterface) {
+  const draft = await read($, draftAtom)
+  if (!draft) return
+  const r = await $.prompt.fill({ text: draft.zh, mode: 'replace' })
+  if (!r.isFilled) {
+    $.ui.toast('当前界面写不了输入框，中文没有还原')
+    return
+  }
+  await update($, draftAtom, () => null)
 }
 
 /** Sends the English draft the band holds, as the person may have edited it. */
@@ -333,6 +350,8 @@ export const register: Register = (on, options) => {
       return out
     })
     await update($, translatingAtom, () => false)
+    // A draft left in the prompt box does not outlive a reload; one the band holds has its text only here.
+    await update($, draftAtom, cur => (cur?.isInBand ? cur : null))
     return next(e)
   })
 
@@ -350,6 +369,12 @@ export const register: Register = (on, options) => {
     // After the button, the next send is the translation, however the person edited it:
     // it keeps their Chinese and its replies are translated.
     const draft = await read($, draftAtom)
+    // The Chinese itself, sent after all (an undo): no translation went out.
+    if (draft && e.text.trim() === draft.zh) {
+      await update($, draftAtom, () => null)
+      await update($, englishTurnAtom, () => false)
+      return next(e)
+    }
     if (draft) {
       await remember($, draft.zh, e.text, e.text.trim() !== draft.en.trim())
       await update($, draftAtom, () => null)
@@ -460,6 +485,8 @@ export const register: Register = (on, options) => {
     const draft = await read($, draftAtom)
     const isBusy = await read($, translatingAtom)
     const { Box, Text, Button, Input } = $.ui.resolve(e)
+    // While the translation sits in the prompt box, the band says so and offers the way back.
+    const isInBox = !!draft && !draft.isInBand
     const bar = (
       <Box flexDirection="row" gap={1} alignItems="center">
         <Button
@@ -468,8 +495,9 @@ export const register: Register = (on, options) => {
           variant="secondary"
           onPress={() => translateBox($, options)}
         />
+        {isInBox ? <Button key="restore-zh" label="还原中文" variant="secondary" onPress={() => restoreChinese($)} /> : null}
         <Text size="caption" color="subtle">
-          把输入框里的中文译成英文，确认后再按 Enter 发送
+          {isInBox ? '已译成英文：下一条发送按译文记录；点「还原中文」取消' : '把输入框里的中文译成英文，确认后再按 Enter 发送'}
         </Text>
       </Box>
     )
