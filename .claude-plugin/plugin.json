@@ -1,6 +1,6 @@
 {
   "name": "zh-en-bridge",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "A button above the prompt box translates your Chinese draft into English through an OpenAI-compatible model (Qwen by default) for you to check before sending; Claude's English replies are shown translated back into Chinese, and the model's context stays English.",
   "types": "./types/index.d.ts",
   "userConfig": {

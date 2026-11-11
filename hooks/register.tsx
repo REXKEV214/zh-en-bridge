@@ -40,10 +40,10 @@ const TO_CHINESE = {
  */
 const LANGUAGE_SECTION = {
   id: 'zh-en-bridge:language',
-  text: "The user may write in Chinese, or have a message machine-translated from Chinese into English before you receive it. Reply in the language of the user's latest message: when it is in English, reply in English, and your reply is translated back into Chinese for them.",
+  text: "Reply in the language of the user's latest message.",
   scope: 'session',
 } as const
-/** Rides beside a translated prompt, for the model alone. */
+
 const translatingAtom = atom({ plugin: 'zh-en-bridge', key: 'translating' } as const, false, { shape: 'translating-1' })
 const englishTurnAtom = atom({ plugin: 'zh-en-bridge', key: 'englishTurn' } as const, false, { shape: 'englishTurn-1' })
 const draftAtom = atom({ plugin: 'zh-en-bridge', key: 'draft' } as const, null as Draft | null, { shape: 'draft-2' })

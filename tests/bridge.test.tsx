@@ -437,7 +437,7 @@ test('the system prompt asks to reply in the language of the latest message', { 
   const input = { model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as never
   const composed = (await $.prompt.compose(input)) as { sections: { id: string; text: string; scope: string }[] }
   expect(composed.sections.map(s => s.id)).toEqual(['intro', 'zh-en-bridge:language'])
-  expect(composed.sections[1]?.text).toContain('when it is in English, reply in English')
+  expect(composed.sections[1]?.text).toBe("Reply in the language of the user's latest message.")
 })
 
 test('a wrapped answer is unwrapped', { options: OPTIONS }, async ($, on) => {
