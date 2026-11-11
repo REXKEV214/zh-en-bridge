@@ -353,17 +353,16 @@ export const register: Register = (on, options) => {
     }
     if (e.isMeta || !TYPED.has(e.origin.kind)) return next(e)
 
-    // A translation from the button, sent as it stands or as the person edited it.
-    // It may keep quoted Chinese, so it counts while unchanged or still mostly English.
+    // After the button, the next send is the translation, however the person edited it:
+    // it keeps their Chinese and its replies are translated.
     const draft = await read($, draftAtom)
-    if (draft && (e.text.trim() === draft.en.trim() || isMostlyEnglish(e.text))) {
+    if (draft) {
       await remember($, draft.zh, e.text, e.text.trim() !== draft.en.trim())
       await update($, draftAtom, () => null)
       await update($, englishTurnAtom, () => true)
       return next({ ...e, context: [...(e.context ?? []), REPLY_IN_ENGLISH] })
     }
-    // Anything else goes out as typed.
-    if (draft) await update($, draftAtom, () => null)
+    // Without the button, the prompt goes out as typed and replies are translated only on request.
     await update($, englishTurnAtom, () => false)
     return next(e)
   })

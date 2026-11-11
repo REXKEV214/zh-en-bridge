@@ -219,20 +219,39 @@ test('a translation that keeps quoted Chinese still counts as the translation', 
   await answer.unmount()
 })
 
-test('Chinese sent after a translation goes out as typed, and its reply is left alone', { options: OPTIONS }, async ($, on) => {
+test('after the button, whatever is sent keeps the Chinese; without it, nothing is translated up front', { options: OPTIONS }, async ($, on) => {
   const { asks, submitted, clock } = engine(on, { draft: ZH })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await translateBox($, () => clock.settle())
-  await $.prompt.submit(typed('算了，直接用中文问：' + ZH))
-  expect(submitted[0]?.context).toBeUndefined()
+  // Edited back into mostly Chinese: still the translation.
+  const edited = '算了，直接用中文问：' + ZH
+  await $.prompt.submit(typed(edited))
+  expect(submitted[0]?.text).toBe(edited)
+  expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
+  const sent = await $.ui.mount(row('UserMessage', 'u-c', edited))
+  expect(await shown(sent)).toBe(edited)
+  await press(sent, '中文原文')
+  expect(await shown(sent)).toBe(ZH)
+  await sent.unmount()
   await $.session.append(reply('row-c'))
   await clock.settle()
-  expect(asks.length).toBe(1)
-  // The draft is gone: a later English prompt is not taken for it.
+  expect(asks.length).toBe(2)
+
+  // The draft is gone: the next prompt, sent without the button, goes out as typed.
   await $.prompt.submit(typed('hello'))
+  expect(submitted[1]?.context).toBeUndefined()
   const user = await $.ui.mount(row('UserMessage', 'u-h', 'hello'))
   expect(await button(user, '中文原文')).toBeFalsy()
   await user.unmount()
+  // Its reply keeps the on-request button and is not translated until pressed.
+  const other = REPLY + ' The tests cover both paths.'
+  await $.session.append(reply('row-h', other))
+  await clock.settle()
+  expect(asks.length).toBe(2)
+  const answer = await $.ui.mount(row('AssistantMessage', 'row-h', other))
+  expect(await shown(answer)).toBe(other)
+  expect((await button(answer, '中文译文'))?.props.variant).toBe('secondary')
+  await answer.unmount()
 })
 
 test('with no writable prompt box the translation waits in the band, editable', { options: OPTIONS }, async ($, on) => {

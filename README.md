@@ -47,7 +47,7 @@ Then set an API key (below) and start a new session.
 - If translation fails (no key, timeout, API error), the box is left unchanged and a notice explains why.
 - If the box has no Chinese outside code blocks, the button does nothing.
 - If the plugin cannot write into the prompt box in your current UI, the translation appears in a draft panel above it. Edit it there, then press **发送英文** (Send English) or Enter, or **放弃** (Discard).
-- The translation may keep quoted Chinese (for example a button label); it still counts as the translation as long as it is unchanged or mostly English. If you rewrite it back into mostly Chinese, it is sent as Chinese.
+- Once you press the button, the next prompt you send counts as the translation however you edit it: it goes out as you left it, shows that text by default, keeps your Chinese behind **中文原文**, and its reply is translated automatically.
 
 **Reading the conversation**
 
