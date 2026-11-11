@@ -8,23 +8,16 @@ export type SentPrompt = {
   isEdited?: boolean
 }
 
-/**
- * A prompt held back for the person to confirm: its English translation, or,
- * when the translation failed, the Chinese to retry or send as typed.
- */
+/** An English translation the button wrote into the prompt box, until it is sent or replaced. */
 export type Draft = {
   /** What the person typed. */
   zh: string
-  /** The translation, once done. */
-  en?: string
-  /** Why the translation failed. */
-  error?: string
-  /** The field's text as the person edited it in the band. */
+  /** The translation. */
+  en: string
+  /** The band field's text as the person edited it. */
   edited?: string
-  /** True when the band shows the draft: a failure, or a surface whose prompt box a plugin cannot write. */
+  /** True when the band holds the draft: a surface whose prompt box a plugin cannot write. */
   isInBand?: boolean
-  /** True while the band's retry is under way. */
-  isTranslating?: boolean
 }
 
 /** One reply's Chinese translation, keyed by a hash of the reply's text. */
@@ -52,11 +45,11 @@ export type Bridge = {
 declare module 'claude-code' {
   interface PluginState {
     'zh-en-bridge': {
-      /** Whether prompts are translated to English before they are sent; null until the person picks, then `enabled_by_default` decides. */
-      enabled: Shaped<boolean | null>
-      /** Whether the last prompt the person sent went out in English. */
+      /** True while the button's translation is under way. */
+      translating: Shaped<boolean>
+      /** Whether the last prompt the person sent was a translation from the button. */
       englishTurn: Shaped<boolean>
-      /** The English draft in the prompt box, until it is sent or English mode is turned off. */
+      /** The button's last translation, until a prompt is sent. */
       draft: Shaped<Draft | null>
       bridge: Shaped<Bridge>
     }

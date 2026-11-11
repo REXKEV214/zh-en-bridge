@@ -1,13 +1,13 @@
 {
   "name": "zh-en-bridge",
-  "version": "0.2.1",
-  "description": "Optional per-message bridge: with English mode on, your Chinese prompt is translated to English by Qwen before it is sent, Claude replies in English, and replies are shown translated back into Chinese; the model's context stays English.",
+  "version": "0.3.0",
+  "description": "A button above the prompt box translates your Chinese draft into English through an OpenAI-compatible model (Qwen by default) for you to check before sending; Claude's English replies are shown translated back into Chinese, and the model's context stays English.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "api_key": {
       "type": "string",
       "title": "翻译模型 API Key",
-      "description": "OpenAI 兼容接口的 API Key（默认是阿里云百炼 / DashScope）；留空则依次读 ~/.claude/plugins/data/zh-en-bridge-zh-en-bridge/.env、~/.claude/plugins/data/readable-rewrite-cn-readable-rewrite-cn/.env、环境变量里的 DASHSCOPE_API_KEY",
+      "description": "OpenAI 兼容接口的 API Key（默认是阿里云百炼 / DashScope）；留空则读 ~/.claude/plugins/data/zh-en-bridge-zh-en-bridge/.env 或环境变量里的 DASHSCOPE_API_KEY",
       "sensitive": true,
       "default": ""
     },
@@ -53,16 +53,10 @@
       "description": "{{text}} 会被换成 Claude 的英文回复；留空则用默认值",
       "default": "<原文>\n{{text}}\n</原文>\n\n把上面的原文翻译成清晰易懂的简体中文。代码、命令、文件路径、标识符、URL 和代码块保持原样；专业术语和人名保留英文原词。保留 Markdown 结构。只输出译文，不要解释，不要带 <原文> 标签，也不要用代码框包裹。"
     },
-    "enabled_by_default": {
-      "type": "boolean",
-      "title": "新会话默认开启英文模式",
-      "description": "开启后，每个新会话一开始就把中文 prompt 译成英文发送",
-      "default": false
-    },
     "timeout_seconds": {
       "type": "number",
       "title": "请求超时（秒）",
-      "description": "单次翻译请求的超时时间；发送前的翻译超时会改为直接发送中文原文",
+      "description": "单次翻译请求的超时时间",
       "default": 30
     }
   }

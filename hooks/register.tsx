@@ -5,14 +5,11 @@ import type { Bridge, Draft, Reply, SentPrompt } from '../types'
 import { ACTIONS, takeActions } from './actions'
 
 /**
- * Where the API key may be, under the home directory, after the
- * `api_key` option: this plugin's data folder, then readable-rewrite-cn's
- * (the same DashScope key serves both), then `DASHSCOPE_API_KEY` itself.
+ * Where the API key may be, under the home directory, after the `api_key`
+ * option: this plugin's data folder, which updates keep (the installed copy
+ * holds only committed files). Then `DASHSCOPE_API_KEY` itself.
  */
-const ENV_FILES = [
-  '.claude/plugins/data/zh-en-bridge-zh-en-bridge/.env',
-  '.claude/plugins/data/readable-rewrite-cn-readable-rewrite-cn/.env',
-]
+const ENV_FILES = ['.claude/plugins/data/zh-en-bridge-zh-en-bridge/.env']
 const KEEP = 400
 /** A reply not translated yet gets the button once its prose holds this many English words. */
 const MIN_WORDS = 20
@@ -50,11 +47,9 @@ const LANGUAGE_SECTION = {
 const REPLY_IN_ENGLISH =
   'The user wrote this message in Chinese; it was machine-translated into English. Reply in English: your reply is translated back into Chinese for them.'
 
-const enabledAtom = atom({ plugin: 'zh-en-bridge', key: 'enabled' } as const, null as boolean | null, {
-  shape: 'enabled-1',
-})
+const translatingAtom = atom({ plugin: 'zh-en-bridge', key: 'translating' } as const, false, { shape: 'translating-1' })
 const englishTurnAtom = atom({ plugin: 'zh-en-bridge', key: 'englishTurn' } as const, false, { shape: 'englishTurn-1' })
-const draftAtom = atom({ plugin: 'zh-en-bridge', key: 'draft' } as const, null as Draft | null, { shape: 'draft-1' })
+const draftAtom = atom({ plugin: 'zh-en-bridge', key: 'draft' } as const, null as Draft | null, { shape: 'draft-2' })
 const bridgeAtom = atom(
   { plugin: 'zh-en-bridge', key: 'bridge' } as const,
   { prompts: {}, replies: {}, byRow: {}, order: [] } as Bridge,
@@ -278,17 +273,6 @@ async function ensureReply($: EngineInterface, options: PluginOptions, hash: str
   if (start) await translateReply($, options, hash, source)
 }
 
-/** The person's pick in this session; none yet, the `enabled_by_default` option. */
-async function isEnabled($: EngineInterface, options: PluginOptions): Promise<boolean> {
-  return (await read($, enabledAtom)) ?? options.enabled_by_default === true
-}
-
-async function setEnabled($: EngineInterface, value: boolean) {
-  await update($, enabledAtom, () => value)
-  if (!value) await update($, draftAtom, () => null)
-  $.ui.status(value ? '中→英 发送：开' : undefined)
-}
-
 /** Records that `sent` went out for what the person typed, so its row shows the Chinese. */
 async function remember($: EngineInterface, zh: string, sent: string, isEdited: boolean) {
   const hash = await hashOf(sent)
@@ -296,19 +280,19 @@ async function remember($: EngineInterface, zh: string, sent: string, isEdited: 
   await update($, bridgeAtom, cur => trim({ ...cur, prompts: { ...cur.prompts, [hash]: one }, order: withOrder(cur, hash) }))
 }
 
-/** Puts the English draft in the prompt box; where the surface has no box a plugin can write, the band holds it. */
+/** Puts the English in the prompt box; where the surface has no box a plugin can write, the band holds it. */
 async function putInBox($: EngineInterface, text: string) {
   const r = await $.prompt.fill({ text, mode: 'replace' })
   if (!r.isFilled) await update($, draftAtom, cur => (cur ? { ...cur, isInBand: true } : cur))
 }
 
 /**
- * Translates what the prompt box holds and writes the English in its place,
- * before anything is submitted: the way to confirm a translation without Enter
- * (on the desktop app, Enter draws the message in the chat before a hook can
- * hold it back).
+ * Translates the Chinese in the prompt box and writes the English in its
+ * place. Nothing is submitted: the person reads it, edits it and presses Enter.
+ * On a failure the box keeps the Chinese untouched.
  */
 async function translateBox($: EngineInterface, options: PluginOptions) {
+  if (await read($, translatingAtom)) return
   const box = await $.prompt.read()
   const zh = box.text.trim()
   if (!zh) {
@@ -319,53 +303,31 @@ async function translateBox($: EngineInterface, options: PluginOptions) {
     $.ui.toast('输入框里没有中文，直接发送就行')
     return
   }
-  $.ui.status('正在把输入框译成英文…')
+  await update($, translatingAtom, () => true)
   const r = await translate($, options, TO_ENGLISH, zh)
-  $.ui.status('中→英 发送：开')
+  await update($, translatingAtom, () => false)
   if (r.error !== undefined) {
-    await update($, draftAtom, () => ({ zh, error: r.error, isInBand: true }))
+    $.ui.toast(`翻译失败（${r.error}），输入框里的中文没有改动`)
     return
   }
   await update($, draftAtom, () => ({ zh, en: r.text }))
   await putInBox($, r.text)
 }
 
-/** Sends the band's draft: the English (`en`) or the Chinese as typed (`zh`). */
-async function sendDraft($: EngineInterface, which: 'en' | 'zh') {
+/** Sends the English draft the band holds, as the person may have edited it. */
+async function sendDraft($: EngineInterface) {
   const draft = await read($, draftAtom)
   if (!draft) return
-  const text = (draft.edited ?? (which === 'en' ? draft.en : draft.zh) ?? draft.zh).trim()
+  const text = (draft.edited ?? draft.en).trim()
   if (!text) return
-  if (which === 'en') await remember($, draft.zh, text, text !== draft.en?.trim())
-  await update($, englishTurnAtom, () => which === 'en')
+  await remember($, draft.zh, text, text !== draft.en.trim())
+  await update($, englishTurnAtom, () => true)
   await update($, draftAtom, () => null)
   await $.prompt.submit({ text, asUser: true })
 }
 
-/** Translates the band's Chinese again, as the person may have edited it. */
-async function retryDraft($: EngineInterface, options: PluginOptions) {
-  const draft = await read($, draftAtom)
-  if (!draft) return
-  const zh = (draft.edited ?? draft.zh).trim()
-  if (!zh) return
-  await update($, draftAtom, cur => (cur ? { ...cur, zh, edited: undefined, error: undefined, isTranslating: true } : cur))
-  const r = await translate($, options, TO_ENGLISH, zh)
-  await update($, draftAtom, cur =>
-    !cur
-      ? cur
-      : r.error !== undefined
-        ? { zh, error: r.error, isInBand: true }
-        : { zh, en: r.text, isInBand: true },
-  )
-}
-
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'en',
-      description: '英文模式：/en on（中文 prompt 先译成英文给你确认，回复译回中文）| off | 不带参数切换',
-    })
-    $.ui.status((await isEnabled($, options)) ? '中→英 发送：开' : undefined)
     // A reload drops calls in flight: mark them failed so a press retries.
     await update($, bridgeAtom, cur => {
       let out = cur
@@ -373,7 +335,7 @@ export const register: Register = (on, options) => {
         if (one.status === 'pending') out = setReply(out, hash, { ...one, status: 'failed', error: 'mod 重新加载，请求中断' })
       return out
     })
-    await update($, draftAtom, cur => (cur?.isTranslating ? { zh: cur.zh, error: 'mod 重新加载，请求中断', isInBand: true } : cur))
+    await update($, translatingAtom, () => false)
     return next(e)
   })
 
@@ -382,63 +344,31 @@ export const register: Register = (on, options) => {
     return { sections: [...composed.sections.filter(s => s.id !== LANGUAGE_SECTION.id), LANGUAGE_SECTION] }
   })
 
-  on('command.run', { command: 'en' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
-    const cur = await isEnabled($, options)
-    const value = arg === 'on' ? true : arg === 'off' ? false : arg === '' ? !cur : undefined
-    if (value === undefined) return { text: '用法：/en on | off，不带参数则切换' }
-    await setEnabled($, value)
-    return {
-      text: value
-        ? '英文模式已开：发出的中文会先译成英文给你确认，Claude 用英文回复，界面显示中文译文。'
-        : '英文模式已关：prompt 按原文发送。',
-    }
-  })
-
   on('prompt.submit', async ($, e, next) => {
     if (e.command) return next(e)
-    // A draft this plugin sends from the band: `sendDraft` has already recorded it.
+    // The band's own send: `sendDraft` has already recorded it.
     if (e.origin.kind === 'plugin') {
-      if (e.origin.name !== 'zh-en-bridge' || !(await read($, englishTurnAtom))) return next(e)
+      if (e.origin.name !== 'zh-en-bridge') return next(e)
       return next({ ...e, context: [...(e.context ?? []), REPLY_IN_ENGLISH] })
     }
     if (e.isMeta || !TYPED.has(e.origin.kind)) return next(e)
-    if (!(await isEnabled($, options))) {
-      await update($, englishTurnAtom, () => false)
-      return next(e)
-    }
-    const context = [...(e.context ?? []), REPLY_IN_ENGLISH]
 
-    // No Chinese left: the English draft as the person confirmed or edited it,
-    // or English they typed themselves. Either way it goes out as it stands.
-    if (!hasChinese(e.text)) {
-      const draft = await read($, draftAtom)
-      if (draft?.en !== undefined) {
-        await remember($, draft.zh, e.text, e.text.trim() !== draft.en.trim())
-        await update($, draftAtom, () => null)
-      }
+    // A translation from the button, sent as it stands or as the person edited it.
+    const draft = await read($, draftAtom)
+    if (draft && !hasChinese(e.text)) {
+      await remember($, draft.zh, e.text, e.text.trim() !== draft.en.trim())
+      await update($, draftAtom, () => null)
       await update($, englishTurnAtom, () => true)
-      return next({ ...e, context })
+      return next({ ...e, context: [...(e.context ?? []), REPLY_IN_ENGLISH] })
     }
-
-    $.ui.status('正在把 prompt 译成英文…')
-    const r = await translate($, options, TO_ENGLISH, e.text)
-    $.ui.status('中→英 发送：开')
-    const attached = e.attachments?.length ? '附带的图片或文件需要重新添加。' : ''
-    if (r.error !== undefined) {
-      // Nothing goes out unconfirmed: the band holds the Chinese, to retry or send as typed.
-      await update($, draftAtom, () => ({ zh: e.text, error: r.error, isInBand: true }))
-      return { drop: `翻译失败（${r.error}），这条没有发出。输入框上方可以重试翻译，或直接发送中文原文。${attached}` }
-    }
-
-    // The English goes back for the person to read, edit and send; this submission stops here.
-    await update($, draftAtom, () => ({ zh: e.text, en: r.text }))
-    $.clock.after(0, () => void putInBox($, r.text))
-    return { drop: `已译成英文，还没有发出：检查或修改后再发送。${attached}` }
+    // Anything else goes out as typed.
+    if (draft) await update($, draftAtom, () => null)
+    await update($, englishTurnAtom, () => false)
+    return next(e)
   })
 
-  // Claude's replies in an English turn are translated for display; the row
-  // itself is stored unchanged, so the model's context stays English.
+  // Claude's replies to a translated prompt are translated for display; the
+  // row itself is stored unchanged, so the model's context stays English.
   on('session.append', { door: 'response' }, async ($, e, next) => {
     const stored = await next(e)
     if (e.agentId || e.message.type !== 'assistant') return stored
@@ -491,7 +421,7 @@ export const register: Register = (on, options) => {
     // A reply not yet translated gets the button once it holds enough English.
     if (!reply && englishWords(e.props.text) < MIN_WORDS) return next(e)
 
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Text, Button, Box } = $.ui.resolve(e)
     const source = reply?.source ?? e.props.text
     // One button: lit while the translation is chosen; pressing it again goes back to the original.
     const isOn = !!reply && reply.status !== 'failed' && !reply.showOriginal
@@ -533,60 +463,44 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const enabled = await isEnabled($, options)
     const draft = await read($, draftAtom)
+    const isBusy = await read($, translatingAtom)
     const { Box, Text, Button, Input } = $.ui.resolve(e)
-    const toggle = (
+    const bar = (
       <Box flexDirection="row" gap={1} alignItems="center">
         <Button
-          key="toggle-english"
-          label="英文模式"
-          variant={enabled ? 'primary' : 'secondary'}
-          onPress={() => setEnabled($, !enabled)}
+          key="translate-box"
+          label={isBusy ? '翻译中…' : '译成英文'}
+          variant="secondary"
+          onPress={() => translateBox($, options)}
         />
-        {enabled && !draft?.isInBand ? (
-          <Button key="translate-box" label="译成英文" variant="secondary" onPress={() => translateBox($, options)} />
-        ) : null}
         <Text size="caption" color="subtle">
-          {enabled ? '先点「译成英文」，确认后再按 Enter 发送；回复译回中文' : '按原文发送'}
+          把输入框里的中文译成英文，确认后再按 Enter 发送
         </Text>
       </Box>
     )
-    if (!draft?.isInBand) return toggle
+    if (!draft?.isInBand) return bar
 
-    const isFailed = draft.error !== undefined
-    const value = draft.edited ?? (isFailed ? draft.zh : (draft.en ?? draft.zh))
+    // A surface whose prompt box a plugin cannot write: the draft waits here.
+    const value = draft.edited ?? draft.en
     const setEdited = (v: string) => void update($, draftAtom, cur => (cur ? { ...cur, edited: v } : cur))
-    const discard = () => update($, draftAtom, () => null)
     return (
       <Box flexDirection="column" gap={1}>
-        {toggle}
-        <Text size="caption" color={isFailed ? 'warning' : 'subtle'}>
-          {draft.isTranslating
-            ? '正在重新翻译…'
-            : isFailed
-              ? `翻译失败（${draft.error}）：可以修改后重试，或直接发送中文原文`
-              : '英文草稿：检查或修改后发送'}
+        {bar}
+        <Text size="caption" color="subtle">
+          英文草稿：检查或修改后发送
         </Text>
         <Input
           key="draft"
           value={value}
           rows={Math.min(8, Math.max(3, value.split('\n').length + 1))}
-          submitLabel={isFailed ? '重试翻译' : '发送'}
+          submitLabel="发送"
           onInput={setEdited}
-          onSubmit={v => {
-            setEdited(v)
-            void (isFailed ? retryDraft($, options) : sendDraft($, 'en'))
-          }}
+          onSubmit={v => void update($, draftAtom, cur => (cur ? { ...cur, edited: v } : cur)).then(() => sendDraft($))}
         />
         <Box flexDirection="row" gap={1}>
-          {isFailed ? (
-            <Button key="draft-retry" label="重试翻译" variant="primary" onPress={() => retryDraft($, options)} />
-          ) : (
-            <Button key="draft-send-en" label="发送英文" variant="primary" onPress={() => sendDraft($, 'en')} />
-          )}
-          <Button key="draft-send-zh" label="发送中文原文" variant="secondary" onPress={() => sendDraft($, 'zh')} />
-          <Button key="draft-discard" label="放弃" variant="secondary" onPress={discard} />
+          <Button key="draft-send" label="发送英文" variant="primary" onPress={() => sendDraft($)} />
+          <Button key="draft-discard" label="放弃" variant="secondary" onPress={() => update($, draftAtom, () => null)} />
         </Box>
       </Box>
     )

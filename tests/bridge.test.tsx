@@ -10,7 +10,7 @@ const REPLY_ZH = '重试逻辑没问题：超时或服务端错误会重试一�
 const OPTIONS = { api_key: 'test-qwen-key' }
 
 type Ask = { url: string; headers: Record<string, string>; body: { messages: { role: string; content: string }[] } & Record<string, unknown> }
-type Submitted = { text: string; context?: readonly string[]; origin?: unknown }
+type Submitted = { text: string; context?: readonly string[] }
 
 function ok(content: string): HttpResponse {
   return { status: 200, ok: true, headers: {}, text: JSON.stringify({ choices: [{ message: { content } }] }) }
@@ -21,19 +21,22 @@ function failed(message: string): HttpResponse {
 const isToEnglish = (ask: Ask) => ask.body.messages[0]?.content.startsWith('You are a translator') ?? false
 
 /**
- * The engine beneath the plugin. `hasBox` false stands for a surface whose
- * prompt box a plugin cannot write (the desktop app draws its own).
+ * The engine beneath the plugin. `draft` is what the prompt box holds;
+ * `hasBox` false stands for a surface whose prompt box a plugin cannot write.
  */
-function engine(on: On, opts: { answer?: (ask: Ask, calls: number) => HttpResponse | undefined; hasBox?: boolean; draft?: string } = {}) {
+function engine(on: On, opts: { answer?: (ask: Ask, calls: number) => HttpResponse | undefined; hasBox?: boolean; draft?: string; env?: Record<string, string> } = {}) {
   const asks: Ask[] = []
   const submitted: Submitted[] = []
   const fills: string[] = []
-  mock.env(on, {})
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: { command: 'en' } }))
-  on('command.run', () => ({ text: '' }))
-  on('ui.status', () => ({ value: undefined }))
+  const toasts: string[] = []
   const box = { text: opts.draft ?? '' }
+  mock.env(on, opts.env ?? {})
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => {
+    toasts.push(String((e as { text?: string }).text ?? e))
+    return { value: undefined }
+  })
   on('prompt.read', () => ({ value: { text: box.text, cursor: box.text.length } }))
   on('prompt.fill', (_, e) => {
     if (opts.hasBox === false) return { isFilled: false, refusal: 'no_composer' as const }
@@ -42,7 +45,7 @@ function engine(on: On, opts: { answer?: (ask: Ask, calls: number) => HttpRespon
     return { isFilled: true }
   })
   on('prompt.submit', (_, e) => {
-    submitted.push({ text: e.text, context: e.context, origin: e.origin })
+    submitted.push({ text: e.text, context: e.context })
     return { text: e.text, context: e.context }
   })
   on('http.fetch', (_, e) => {
@@ -57,7 +60,7 @@ function engine(on: On, opts: { answer?: (ask: Ask, calls: number) => HttpRespon
     const { Markdown } = $.ui.resolve(e)
     return <Markdown text={(e.props as { text: string }).text} />
   })
-  return { asks, submitted, fills, clock: mock.clock(on), session: mock.session(on) }
+  return { asks, submitted, fills, toasts, box, clock: mock.clock(on), session: mock.session(on) }
 }
 
 function typed(text: string) {
@@ -101,33 +104,32 @@ async function shown(ui: Drawing): Promise<string> {
   return String(((await ui.find({ type: 'Markdown' })) as { text: string }).text)
 }
 
-test('off by default: the prompt goes out as typed and nothing is called', { options: OPTIONS }, async ($, on) => {
+/** Presses 「译成英文」 in the band above the prompt box. */
+async function translateBox($: { ui: { mount: (a: never) => Promise<unknown> } }, settle: () => Promise<unknown>, surface: 'desktop' | 'terminal' = 'desktop') {
+  const band = (await $.ui.mount(row('AbovePrompt', 'band', '', surface))) as Drawing & { unmount: () => Promise<void> }
+  await press(band, '译成英文')
+  await settle()
+  await band.unmount()
+}
+
+test('without the button a prompt goes out as typed and nothing is called', { options: OPTIONS }, async ($, on) => {
   const { asks, submitted, clock } = engine(on)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.prompt.submit(typed(ZH))
   await $.session.append(reply('row-off'))
   await clock.settle()
-  expect(submitted.map(s => [s.text, s.context])).toEqual([[ZH, undefined]])
+  expect(submitted).toEqual([{ text: ZH, context: undefined }])
   expect(asks).toEqual([])
 })
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  test(`English mode: the translation waits in the box, then goes out; rows show Chinese (${surface})`, { options: OPTIONS }, async ($, on) => {
-    const { asks, submitted, fills, clock, session } = engine(on)
+  test(`the button puts the English in the box; Enter sends it; rows show Chinese (${surface})`, { options: OPTIONS }, async ($, on) => {
+    const { asks, submitted, fills, clock, session } = engine(on, { draft: ZH })
     await $.session.start({ cwd: '/', surface, isInteractive: true })
 
-    const band = await $.ui.mount(row('AbovePrompt', 'band', '', surface))
-    expect((await button(band, '英文模式'))?.props.variant).toBe('secondary')
-    await press(band, '英文模式')
-    expect((await button(band, '英文模式'))?.props.variant).toBe('primary')
-    await band.unmount()
-
-    // Enter on Chinese: translated, held back, put in the box.
-    const first = (await $.prompt.submit(typed(ZH))) as { drop?: string }
-    await clock.settle()
-    expect(first.drop).toContain('还没有发出')
-    expect(submitted).toEqual([])
+    await translateBox($, () => clock.settle(), surface)
     expect(fills).toEqual([EN])
+    expect(submitted).toEqual([])
     const toEnglish = asks[0]
     expect(toEnglish?.url).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions')
     expect(toEnglish?.headers.Authorization).toBe('Bearer test-qwen-key')
@@ -152,6 +154,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await shown(user)).toBe(ZH)
     await user.unmount()
 
+    // The reply to a translated prompt is translated up front; a subagent's is not.
     await $.session.append(reply('row-1'))
     await $.session.append(reply('row-sub', REPLY + ' (subagent)', 'a1'))
     await clock.settle()
@@ -176,11 +179,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
   })
 }
 
-test('an edited draft goes out as edited and says so', { options: OPTIONS }, async ($, on) => {
-  const { submitted } = engine(on)
+test('an edited translation goes out as edited and says so', { options: OPTIONS }, async ($, on) => {
+  const { submitted, clock } = engine(on, { draft: ZH })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  await $.prompt.submit(typed(ZH))
+  await translateBox($, () => clock.settle())
   const edited = EN + ', especially the timeout.'
   await $.prompt.submit(typed(edited))
   expect(submitted.map(s => s.text)).toEqual([edited])
@@ -190,12 +192,26 @@ test('an edited draft goes out as edited and says so', { options: OPTIONS }, asy
   await user.unmount()
 })
 
-test('with no writable prompt box the draft waits in the band, editable', { options: OPTIONS }, async ($, on) => {
-  const { submitted, clock } = engine(on, { hasBox: false })
+test('Chinese sent after a translation goes out as typed, and its reply is left alone', { options: OPTIONS }, async ($, on) => {
+  const { asks, submitted, clock } = engine(on, { draft: ZH })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  await $.prompt.submit(typed(ZH))
+  await translateBox($, () => clock.settle())
+  await $.prompt.submit(typed('算了，直接用中文问：' + ZH))
+  expect(submitted[0]?.context).toBeUndefined()
+  await $.session.append(reply('row-c'))
   await clock.settle()
+  expect(asks.length).toBe(1)
+  // The draft is gone: a later English prompt is not taken for it.
+  await $.prompt.submit(typed('hello'))
+  const user = await $.ui.mount(row('UserMessage', 'u-h', 'hello'))
+  expect(await button(user, '发送的英文')).toBeFalsy()
+  await user.unmount()
+})
+
+test('with no writable prompt box the translation waits in the band, editable', { options: OPTIONS }, async ($, on) => {
+  const { submitted, clock } = engine(on, { hasBox: false, draft: ZH })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await translateBox($, () => clock.settle())
   expect(submitted).toEqual([])
 
   const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
@@ -217,77 +233,45 @@ test('with no writable prompt box the draft waits in the band, editable', { opti
   await user.unmount()
 })
 
-test('a failed translation sends nothing; the band offers a retry or the Chinese as typed', { options: OPTIONS }, async ($, on) => {
-  const { asks, submitted, fills, clock } = engine(on, { answer: (_, calls) => (calls === 1 ? failed('invalid api key') : undefined) })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  const r = (await $.prompt.submit(typed(ZH))) as { drop?: string }
-  await clock.settle()
-  expect(r.drop).toContain('invalid api key')
-  expect(submitted).toEqual([])
+test('a failed translation leaves the Chinese in the box and says why', { options: OPTIONS }, async ($, on) => {
+  const { submitted, fills, toasts, box, clock } = engine(on, { draft: ZH, answer: () => failed('invalid api key') })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await translateBox($, () => clock.settle())
   expect(fills).toEqual([])
-
+  expect(box.text).toBe(ZH)
+  expect(submitted).toEqual([])
+  expect(toasts.join('\n')).toContain('invalid api key')
   const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
-  expect(((await band.find({ type: 'Input', key: 'draft' })) as Found).props.value).toBe(ZH)
-  expect(((await band.find({ type: 'Text', text: /翻译失败/ })) as Found).text).toContain('invalid api key')
-
-  // A retry that works turns the band into the English draft.
-  await press(band, '重试翻译')
-  await clock.settle()
-  expect(asks.length).toBe(2)
-  expect(((await band.find({ type: 'Input', key: 'draft' })) as Found).props.value).toBe(EN)
+  expect(await band.find({ type: 'Input', key: 'draft' })).toBeFalsy()
+  expect(await button(band, '译成英文')).toBeTruthy()
   await band.unmount()
 })
 
-test('after a failure the Chinese can go out as typed, untranslated', { options: OPTIONS }, async ($, on) => {
-  const { asks, submitted, clock } = engine(on, { answer: () => failed('quota') })
+test('a box with no Chinese, or an empty one, calls nothing', { options: OPTIONS }, async ($, on) => {
+  const { asks, fills, toasts, box, clock } = engine(on, { draft: 'already English' })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  await $.prompt.submit(typed(ZH))
-  const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
-  await press(band, '发送中文原文')
-  await clock.settle()
-  expect(submitted.map(s => [s.text, s.context])).toEqual([[ZH, undefined]])
-  await band.unmount()
-
-  // That turn is not an English one: its replies are not translated up front.
-  await $.session.append(reply('row-z'))
-  await clock.settle()
-  expect(asks.length).toBe(1)
-})
-
-test('/en toggles, and /en off sends as typed again', { options: OPTIONS }, async ($, on) => {
-  const { submitted } = engine(on)
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'en', args: '' } as never)
-  await $.prompt.submit(typed(ZH))
-  await $.prompt.submit(typed(EN))
-  await $.command.run({ command: 'en', args: 'off' } as never)
-  await $.prompt.submit(typed(ZH))
-  expect(submitted.map(s => s.text)).toEqual([EN, ZH])
-  expect(submitted[1]?.context).toBeUndefined()
-})
-
-test('a prompt with no Chinese is not translated but still asks for English', { options: OPTIONS }, async ($, on) => {
-  const { asks, submitted } = engine(on)
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  await $.prompt.submit(typed('fix the bug in ```\n// 注释\nretry()\n```'))
+  await translateBox($, () => clock.settle())
+  box.text = '   '
+  await translateBox($, () => clock.settle())
   expect(asks).toEqual([])
-  expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
+  expect(fills).toEqual([])
+  expect(toasts.length).toBe(2)
 })
 
 test('a slash command and another plugin\'s prompt pass untouched', { options: OPTIONS }, async ($, on) => {
-  const { asks, submitted } = engine(on)
+  const { asks, submitted, clock } = engine(on, { draft: ZH })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  await $.prompt.submit({ text: '/review 中文参数', wait: false, origin: { kind: 'composer' }, command: { name: 'review', args: '中文参数' } } as never)
-  await $.prompt.submit({ text: ZH, wait: false, origin: { kind: 'plugin', name: 'other' } } as never)
-  expect(asks).toEqual([])
-  expect(submitted.map(s => s.text)).toEqual(['/review 中文参数', ZH])
+  await translateBox($, () => clock.settle())
+  await $.prompt.submit({ text: '/review args', wait: false, origin: { kind: 'composer' }, command: { name: 'review', args: 'args' } } as never)
+  await $.prompt.submit({ text: 'from another plugin', wait: false, origin: { kind: 'plugin', name: 'other' } } as never)
+  expect(asks.length).toBe(1)
+  expect(submitted.map(s => [s.text, s.context])).toEqual([
+    ['/review args', undefined],
+    ['from another plugin', undefined],
+  ])
 })
 
-test('the button needs at least 20 English words in the prose', { options: OPTIONS }, async ($, on) => {
+test('the reply button needs at least 20 English words in the prose', { options: OPTIONS }, async ($, on) => {
   const { asks, clock } = engine(on)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const nineteen = 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen'
@@ -299,7 +283,7 @@ test('the button needs at least 20 English words in the prose', { options: OPTIO
   expect((await button(long, '中文译文'))?.props.variant).toBe('secondary')
   await long.unmount()
 
-  // Outside English mode nothing is called until the button is pressed.
+  // A reply to a prompt sent as typed is not translated until the button is pressed.
   await $.session.append(reply('row-b'))
   await clock.settle()
   expect(asks).toEqual([])
@@ -311,13 +295,14 @@ test('the button needs at least 20 English words in the prose', { options: OPTIO
 })
 
 test('a failed reply translation shows why; pressing again retries', { options: OPTIONS }, async ($, on) => {
-  const { clock } = engine(on, { answer: ask => (isToEnglish(ask) ? undefined : failedOnce()) })
   let isFirst = true
-  function failedOnce() {
-    if (!isFirst) return undefined
-    isFirst = false
-    return failed('quota')
-  }
+  const { clock } = engine(on, {
+    answer: () => {
+      if (!isFirst) return undefined
+      isFirst = false
+      return failed('quota')
+    },
+  })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount(row('AssistantMessage', 'row-r', REPLY))
   await press(ui, '中文译文')
@@ -348,42 +333,15 @@ test('another plugin\'s reply buttons join this one on a single row', { options:
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount(row('AssistantMessage', 'row-j', REPLY))
   const rows = (await ui.findAll({ type: 'Box', key: 'reply-actions' })) as Found[]
-  const outer = rows[0]
-  expect(outer?.props.flexDirection).toBe('row')
-  // The outer row holds the other plugin's row, then this plugin's button.
-  const labels = JSON.stringify(outer)
-  expect(labels.indexOf('通义 改写')).toBeGreaterThan(-1)
-  expect(labels.indexOf('中文译文')).toBeGreaterThan(labels.indexOf('通义 改写'))
-  expect((await ui.findAll({ type: 'Box' })).filter(b => JSON.stringify(b).includes('通义 改写')).length).toBeGreaterThan(0)
-  // Nothing else draws a second row of buttons under the reply.
   expect(rows.length).toBe(2)
+  expect(rows[0]?.props.flexDirection).toBe('row')
+  const outer = JSON.stringify(rows[0])
+  expect(outer.indexOf('通义 改写')).toBeGreaterThan(-1)
+  expect(outer.indexOf('中文译文')).toBeGreaterThan(outer.indexOf('通义 改写'))
   expect(rows[1]?.props.marginTop).toBeUndefined()
-
   await ui.press({ key: 'other-rewrite', plugin: 'test' })
   expect(otherPressed).toBe(1)
   await ui.unmount()
-})
-
-test('a wrapped answer is unwrapped', { options: OPTIONS }, async ($, on) => {
-  const { fills, clock } = engine(on, { answer: ask => (isToEnglish(ask) ? ok('```\n<text>\n' + EN + '\n</text>\n```') : undefined) })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  await $.prompt.submit(typed(ZH))
-  await clock.settle()
-  expect(fills).toEqual([EN])
-})
-
-test('the system prompt asks to reply in the language of the latest message, the same text either way', { options: OPTIONS }, async ($, on) => {
-  engine(on)
-  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  const input = { model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as never
-  const off = (await $.prompt.compose(input)) as { sections: { id: string; text: string; scope: string }[] }
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  const on_ = (await $.prompt.compose(input)) as { sections: { id: string; text: string; scope: string }[] }
-  expect(off).toEqual(on_)
-  expect(off.sections.map(s => s.id)).toEqual(['intro', 'zh-en-bridge:language'])
-  expect(off.sections[1]?.text).toContain('when it is in English, reply in English')
 })
 
 test('the API, model and prompts can all be replaced in the options', {
@@ -396,11 +354,9 @@ test('the API, model and prompts can all be replaced in the options', {
     to_english_template: 'ZH: {{text}}',
   },
 }, async ($, on) => {
-  const { asks, fills, clock } = engine(on, { answer: () => ok(EN) })
+  const { asks, fills, clock } = engine(on, { draft: ZH, answer: () => ok(EN) })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  await $.prompt.submit(typed(ZH))
-  await clock.settle()
+  await translateBox($, () => clock.settle())
   expect(fills).toEqual([EN])
   const ask = asks[0]
   expect(ask?.url).toBe('https://api.example.com/v1/chat/completions')
@@ -426,36 +382,39 @@ test('a prompt option left empty falls back to the built-in default', {
   await ui.unmount()
 })
 
-test('「译成英文」 replaces the Chinese in the box before anything is submitted', { options: OPTIONS }, async ($, on) => {
-  const { asks, submitted, fills, clock } = engine(on, { draft: ZH })
+test('the system prompt asks to reply in the language of the latest message', { options: OPTIONS }, async ($, on) => {
+  engine(on)
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
-  expect(await button(band, '译成英文')).toBeFalsy()
-  await press(band, '英文模式')
-  await press(band, '译成英文')
-  await clock.settle()
-  expect(fills).toEqual([EN])
-  expect(submitted).toEqual([])
-  expect(asks.length).toBe(1)
-  await band.unmount()
-
-  // Enter on the English sends it, and the row shows the Chinese.
-  await $.prompt.submit(typed(EN))
-  expect(submitted.map(s => s.text)).toEqual([EN])
-  expect(submitted[0]?.context?.join('\n')).toContain('Reply in English')
-  const user = await $.ui.mount(row('UserMessage', 'u-t', EN))
-  expect(await shown(user)).toBe(ZH)
-  await user.unmount()
+  const input = { model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] } as never
+  const composed = (await $.prompt.compose(input)) as { sections: { id: string; text: string; scope: string }[] }
+  expect(composed.sections.map(s => s.id)).toEqual(['intro', 'zh-en-bridge:language'])
+  expect(composed.sections[1]?.text).toContain('when it is in English, reply in English')
 })
 
-test('「译成英文」 on a box with no Chinese calls nothing', { options: OPTIONS }, async ($, on) => {
-  const { asks, fills, clock } = engine(on, { draft: 'already English' })
+test('a wrapped answer is unwrapped', { options: OPTIONS }, async ($, on) => {
+  const { fills, clock } = engine(on, { draft: ZH, answer: ask => (isToEnglish(ask) ? ok('```\n<text>\n' + EN + '\n</text>\n```') : undefined) })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await translateBox($, () => clock.settle())
+  expect(fills).toEqual([EN])
+})
+
+test('with no key option the key comes from this plugin\'s own .env, then the environment', { options: { api_key: '' } }, async ($, on) => {
+  const reads: string[] = []
+  on('fs.read', (_, e) => {
+    reads.push(e.path)
+    return { value: '# key\nexport DASHSCOPE_API_KEY="key-from-dotenv"\n' }
+  })
+  const { asks, clock } = engine(on, { draft: ZH, env: { HOME: '/Users/k', DASHSCOPE_API_KEY: 'key-from-env' } })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.command.run({ command: 'en', args: 'on' } as never)
-  const band = await $.ui.mount(row('AbovePrompt', 'band', ''))
-  await press(band, '译成英文')
-  await clock.settle()
-  expect(asks).toEqual([])
-  expect(fills).toEqual([])
-  await band.unmount()
+  await translateBox($, () => clock.settle())
+  expect(asks[0]?.headers.Authorization).toBe('Bearer key-from-dotenv')
+  expect(reads).toEqual(['/Users/k/.claude/plugins/data/zh-en-bridge-zh-en-bridge/.env'])
+})
+
+test('with no key option and no .env the environment variable is used', { options: { api_key: '' } }, async ($, on) => {
+  const { asks, clock } = engine(on, { draft: ZH, env: { HOME: '/Users/k', DASHSCOPE_API_KEY: 'key-from-env' } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await translateBox($, () => clock.settle())
+  expect(asks[0]?.headers.Authorization).toBe('Bearer key-from-env')
 })
