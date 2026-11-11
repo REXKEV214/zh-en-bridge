@@ -1,0 +1,45 @@
+{
+  "name": "zh-en-bridge",
+  "version": "0.1.0",
+  "description": "Optional per-message bridge: with English mode on, your Chinese prompt is translated to English by Qwen before it is sent, Claude replies in English, and replies are shown translated back into Chinese; the model's context stays English.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "qwen_api_key": {
+      "type": "string",
+      "title": "通义 API Key",
+      "description": "阿里云百炼 / DashScope 的 API Key；留空则依次读 ~/.claude/plugins/data/zh-en-bridge-zh-en-bridge/.env、~/.claude/plugins/data/readable-rewrite-cn-readable-rewrite-cn/.env、环境变量里的 DASHSCOPE_API_KEY",
+      "sensitive": true,
+      "default": ""
+    },
+    "qwen_model": {
+      "type": "string",
+      "title": "通义模型 ID",
+      "description": "百炼控制台里的模型 ID",
+      "default": "qwen3.7-flash"
+    },
+    "qwen_base_url": {
+      "type": "string",
+      "title": "通义 Base URL",
+      "description": "OpenAI 兼容接口地址，不含 /chat/completions",
+      "default": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    },
+    "qwen_extra_body": {
+      "type": "string",
+      "title": "通义额外请求参数（JSON）",
+      "description": "合并进请求体，例如关闭思考：{\"enable_thinking\": false}；留空则不加",
+      "default": "{\"enable_thinking\": false}"
+    },
+    "enabled_by_default": {
+      "type": "boolean",
+      "title": "新会话默认开启英文模式",
+      "description": "开启后，每个新会话一开始就把中文 prompt 译成英文发送",
+      "default": false
+    },
+    "timeout_seconds": {
+      "type": "number",
+      "title": "请求超时（秒）",
+      "description": "单次翻译请求的超时时间；发送前的翻译超时会改为直接发送中文原文",
+      "default": 30
+    }
+  }
+}

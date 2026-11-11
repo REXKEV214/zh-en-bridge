@@ -1,0 +1,13 @@
+{
+  "name": "zh-en-bridge",
+  "owner": {
+    "name": "Kevin"
+  },
+  "description": "zh-en-bridge: optionally translate Chinese prompts to English before sending and show Claude's English replies in Chinese, through Qwen.",
+  "plugins": [
+    {
+      "name": "zh-en-bridge",
+      "source": "./"
+    }
+  ]
+}
