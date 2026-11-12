@@ -45,7 +45,8 @@ Then set an API key (below) and start a new session.
 3. Check or edit the English, then press Enter.
 
 - If translation fails (no key, timeout, API error), the box is left unchanged and a notice explains why.
-- If the box has no Chinese outside code blocks, the button does nothing.
+- Lines you quote by starting them with `>` are left exactly as written; only the text around them is translated. Each stretch of text between quotes is translated on its own.
+- If the box has no Chinese outside quotes and code blocks, the button does nothing.
 - If you keep typing (or send) while the translation is running, the box is left as it is and the translation is dropped; press the button again when ready.
 - While the translation sits in the box, **还原中文** (Restore Chinese) next to the button puts your Chinese back and cancels it. Reloading the plugin, or sending the original Chinese unchanged, cancels it too.
 - If the plugin cannot write into the prompt box in your current UI, the translation appears in a draft panel above it. Edit it there, then press **发送英文** (Send English) or Enter, or **放弃** (Discard).

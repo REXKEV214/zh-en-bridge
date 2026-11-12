@@ -90,6 +90,24 @@ function stripCode(text: string): string {
   return text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '')
 }
 
+/**
+ * Splits a prompt into runs of quoted lines (`>` at a line's start, outside a
+ * code fence) and runs of everything else, in order; joined by `\n` they are
+ * the prompt again.
+ */
+export function splitQuotes(text: string): { isQuote: boolean; text: string }[] {
+  const parts: { isQuote: boolean; text: string }[] = []
+  let isInFence = false
+  for (const line of text.split('\n')) {
+    const isQuote = !isInFence && /^ {0,3}>/.test(line)
+    if (/^\s*(```|~~~)/.test(line)) isInFence = !isInFence
+    const last = parts[parts.length - 1]
+    if (last && last.isQuote === isQuote) last.text += `\n${line}`
+    else parts.push({ isQuote, text: line })
+  }
+  return parts
+}
+
 /** Strips a code fence or tag pair the model wrapped the whole answer in, unless the source was itself so wrapped. */
 export function unwrap(answer: string, source: string): string {
   let t = answer.trim()
@@ -247,6 +265,23 @@ async function translate(
   return first.error !== undefined && first.isRetryable ? callModel($, options, prompts, source) : first
 }
 
+/**
+ * Translates a prompt into English, leaving the lines the person quoted as
+ * written: each run of other text that holds Chinese is one call, the runs
+ * side by side, and any failure fails the whole prompt.
+ */
+async function translatePrompt($: EngineInterface, options: PluginOptions, zh: string): Promise<Result> {
+  const done = await Promise.all(
+    splitQuotes(zh).map(async (part): Promise<Result> => {
+      if (part.isQuote || !hasChinese(part.text)) return { text: part.text }
+      const [, lead = '', core = '', tail = ''] = part.text.match(/^(\s*)([\s\S]*?)(\s*)$/) ?? []
+      const r = await translate($, options, TO_ENGLISH, core)
+      return r.error !== undefined ? r : { text: lead + r.text + tail }
+    }),
+  )
+  return done.find(r => r.error !== undefined) ?? { text: done.map(r => r.text).join('\n') }
+}
+
 async function translateReply($: EngineInterface, options: PluginOptions, hash: string, source: string) {
   const r = await translate($, options, TO_CHINESE, source)
   await update($, bridgeAtom, cur => {
@@ -296,12 +331,12 @@ async function translateBox($: EngineInterface, options: PluginOptions) {
     $.ui.toast('输入框是空的，或者当前界面读不到输入框')
     return
   }
-  if (!hasChinese(zh)) {
-    $.ui.toast('输入框里没有中文，直接发送就行')
+  if (!splitQuotes(zh).some(part => !part.isQuote && hasChinese(part.text))) {
+    $.ui.toast('引用和代码之外没有中文，直接发送就行')
     return
   }
   await update($, translatingAtom, () => true)
-  const r = await translate($, options, TO_ENGLISH, zh)
+  const r = await translatePrompt($, options, zh)
   await update($, translatingAtom, () => false)
   if (r.error !== undefined) {
     $.ui.toast(`翻译失败（${r.error}），输入框里的中文没有改动`)

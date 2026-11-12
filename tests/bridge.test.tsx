@@ -544,3 +544,44 @@ test('a draft left in the box does not outlive a reload; the Chinese sent unchan
   expect(await button(band, '还原中文')).toBeFalsy()
   await band.unmount()
 })
+
+test('quoted lines stay as written; only the text around them is translated', { options: OPTIONS }, async ($, on) => {
+  const MORE = '另外，超时的情况也看一下'
+  const MORE_EN = 'Also check the timeout case.'
+  const draft = `> 这是我引用的一段话\n> 引用的第二行\n\n${ZH}\n\n  > 缩进的引用\n${MORE}`
+  const { asks, fills, clock } = engine(on, {
+    draft,
+    answer: ask => (ask.body.messages[1]?.content.includes(MORE) ? ok(MORE_EN) : undefined),
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await translateBox($, () => clock.settle())
+  expect(fills).toEqual([`> 这是我引用的一段话\n> 引用的第二行\n\n${EN}\n\n  > 缩进的引用\n${MORE_EN}`])
+  // One call per run of unquoted text, none of them carrying a quote.
+  const sentForTranslation = asks.map(a => a.body.messages[1]?.content ?? '')
+  expect(sentForTranslation.some(c => c.includes(`<text>\n${ZH}\n</text>`))).toBe(true)
+  expect(sentForTranslation.some(c => c.includes(`<text>\n${MORE}\n</text>`))).toBe(true)
+  expect(asks.length).toBe(2)
+  expect(JSON.stringify(asks)).not.toContain('引用')
+
+  // Sent, it is the translation: the row keeps the whole Chinese draft.
+  await $.prompt.submit(typed(fills[0] ?? ''))
+  const user = await $.ui.mount(row('UserMessage', 'u-quote', fills[0] ?? ''))
+  await press(user, '中文原文')
+  expect(await shown(user)).toBe(draft)
+  await user.unmount()
+})
+
+test('Chinese only inside quotes calls nothing; a > line inside a code fence is no quote', { options: OPTIONS }, async ($, on) => {
+  const { asks, fills, toasts, box, clock } = engine(on, { draft: '> 只有引用里有中文\nWhat does this mean?' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await translateBox($, () => clock.settle())
+  expect(asks).toEqual([])
+  expect(fills).toEqual([])
+  expect(toasts.join('\n')).toContain('引用和代码之外没有中文')
+
+  const fenced = `${ZH}\n\`\`\`\n> 代码块里的一行\n\`\`\``
+  box.text = fenced
+  await translateBox($, () => clock.settle())
+  expect(asks.length).toBe(1)
+  expect(asks[0]?.body.messages[1]?.content).toContain(`<text>\n${fenced}\n</text>`)
+})
